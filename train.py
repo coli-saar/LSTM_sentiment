@@ -15,7 +15,7 @@ if COMET_API_KEY:
     # Record experiment in Comet
     from comet_ml import Experiment
 
-    experiment  = Experiment(api_key=COMET_API_KEY)
+    experiment  = Experiment(api_key=COMET_API_KEY, project_name="Yelp Sentiment")
 
     hyper_params = dict(settings.MODEL)
     hyper_params.pop("model", None)

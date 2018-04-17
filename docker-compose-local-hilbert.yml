@@ -1,6 +1,7 @@
 version: '2'
 services:
   pytorch:
+    environment:
       - HOSTNAME=hilbert
       - COMET_API_KEY=xxx
     volumes:
