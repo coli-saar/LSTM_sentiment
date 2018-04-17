@@ -2,10 +2,11 @@ import argparse
 import torch
 import models
 import datasets
+import os
 
 # Argument parsing
 parser = argparse.ArgumentParser(description="Sentiment analysis through Yelp reviews.")
-parser.add_argument('--enable-cuda', action='store_true', help='Enable CUDA')
+#parser.add_argument('--enable-cuda', action='store_true', help='Enable CUDA')
 parser.add_argument('--visualize', action='store_true', help='Enable visdom visualization')
 parser.add_argument('--load-path', action='store', help='Path to checkpoint file for evaluation.')
 parser.add_argument('--data-path', action='store', help='Path to dataset.')
@@ -39,7 +40,8 @@ DATA_KWARGS = {
 VISUALIZE = args.visualize
 CHECKPOINT_DIR = "checkpoints"
 
-GPU = torch.cuda.is_available() and args.enable_cuda
+ENABLE_CUDA = os.environ.get("ENABLE_CUDA") or False # set from environment var
+GPU = torch.cuda.is_available() and ENABLE_CUDA #args.enable_cuda
 
 HIST_OPTS = dict(numbins=20,
                  xtickmin=0,
