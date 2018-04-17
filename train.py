@@ -109,10 +109,12 @@ for epoch in range(settings.EPOCHS):
         # Progress update
         if i % 10 == 0:
             sys.stdout.write("\rIter {}/{}, loss: {}".format(i, length, float(loss)))
+            if COMET_API_KEY:
+                step = i + epoch*length
+                experiment.log_metric("training_loss", float(loss), step=step)
+
     print("Epoch finished with last loss: {}".format(float(loss)))
 
-    if COMET_API_KEY:    
-        experiment.log_metric("training_loss", float(loss))
 
     # Visualize distribution and save model checkpoint
     name = "{}_epoch{}.params".format(model.get_name(), epoch)
