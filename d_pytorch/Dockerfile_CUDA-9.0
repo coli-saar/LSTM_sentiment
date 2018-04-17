@@ -1,6 +1,4 @@
-### from https://github.com/anibali/docker-pytorch (cuda 9.1 version)
-
-FROM nvidia/cuda:9.1-base-ubuntu16.04
+FROM nvidia/cuda:9.0-base-ubuntu16.04
 
 # Install some basic utilities
 RUN apt-get update && apt-get install -y \
@@ -48,8 +46,8 @@ RUN conda install -y "conda>=4.4.11" && conda clean -ya
 
 # CUDA 9.1-specific steps
 RUN conda install -y -c pytorch \
-    cuda91=1.0 \
-    magma-cuda91=2.3.0 \
+    cuda90 \
+    magma-cuda90 \
     cudnn=7.0.5 \
  && conda clean -ya
 
@@ -84,26 +82,6 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
 RUN conda install -y -c menpo opencv3 \
  && conda clean -ya
 
-
-
-
-
-
-############ MINE ###############
-
-RUN sudo apt-get update
-RUN sudo apt-get install -y gcc
-
-RUN pip install comet_ml visdom torchwordemb
-
-WORKDIR /
-COPY glove.6B.50d.txt.gz /glove.6B.50d.txt.gz
-WORKDIR /glove
-RUN sudo gunzip /glove.6B.50d.txt.gz
-
-WORKDIR /logs
-WORKDIR /code/checkpoints
-
-
-WORKDIR /
+# Set the default command to python3
+CMD ["python3"]
 
