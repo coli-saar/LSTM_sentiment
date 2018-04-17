@@ -22,7 +22,7 @@ if COMET_API_KEY:
 
     hyper_params = dict(settings.MODEL)
     hyper_params.pop("model", None)
-    hyper_params["training_data"] = settings.args.data_path
+    hyper_params["training_data"] = settings.data_path
     hyper_params["epochs"] = settings.EPOCHS
     hyper_params["learning_rate"] = settings.LEARNING_RATE
     hyper_params["batchsize"] = settings.BATCH_SIZE
@@ -33,7 +33,7 @@ if COMET_API_KEY:
     experiment.log_multiple_params(hyper_params)
 
 # Instansiate dataset
-dataset = settings.DATASET(settings.args.data_path, **settings.DATA_KWARGS)
+dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
 data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
                          shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed)
 
@@ -42,7 +42,7 @@ model = utils.generate_model_from_settings()
 optimizer = torch.optim.Adam(model.parameters(), lr=settings.LEARNING_RATE)
 
 # Log file is namespaced with the current model
-log_file = "logs/{}_{}.csv".format(model.get_name(), settings.args.data_path.split("/")[-1].split(".json")[0])
+log_file = "logs/{}_{}.csv".format(model.get_name(), settings.data_path.split("/")[-1].split(".json")[0])
 
 if settings.VISUALIZE:
     # Visualization thorugh visdom
