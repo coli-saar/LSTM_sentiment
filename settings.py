@@ -32,7 +32,7 @@ MODEL = {
 
 DATASET = datasets.GlovePretrained50d
 DATA_KWARGS = {
-    "glove_path": "glove.6B.50d.txt"
+    "glove_path": "/glove.6B.50d.txt"
 }
 
 VISUALIZE = args.visualize

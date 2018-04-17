@@ -1,0 +1,6 @@
+version: '2'
+services:
+  pytorch:
+    volumes:
+    - .:/code
+    - ./data:/data

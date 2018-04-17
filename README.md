@@ -1,6 +1,17 @@
 # LSTM sentiment analysis on the Yelp-dataset 
 [report](report.pdf)
 
+## Preparation
+
+```
+mkdir checkpoints logs
+docker build -t lstm_sentiment d
+docker-compose -f docker-compose.yml -f docker-compose-local.yml up
+```
+
+
+
+
 This project does sentiment analysis on the [yelp-review](https://www.yelp.com/dataset) dataset. This is done by modeling the star rating and the number of votes for the review being _cool_, _funny_ and _helpful_ as a function of the written text in the review.
 
 The models evaluated are different combinations of recurrent neural networks, embeddings and convolutional neural networks. All the models are implemented in [PyTorch](http://pytorch.org/).

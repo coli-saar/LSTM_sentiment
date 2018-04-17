@@ -1,0 +1,8 @@
+version: '2'
+services:
+  pytorch:
+    image: lstm_sentiment
+    working_dir: /code
+    environment:
+      - PYTHONIOENCODING=utf8
+    command: python -u train.py --data-path /data/small_data_train.json
