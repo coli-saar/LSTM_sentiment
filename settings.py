@@ -21,6 +21,7 @@ GPU = torch.cuda.is_available()
 
 MODEL = {
     "model": models.PureGRU,
+    "model_name": "PureGRU",
     "embedding_dim": 50,
     "input_size": 50,
     "hidden_size": 128,

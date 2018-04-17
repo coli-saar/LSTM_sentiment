@@ -1,4 +1,4 @@
-import sys
+import sys, os
 
 import numpy as np
 import torch
@@ -7,6 +7,30 @@ from visdom import Visdom
 
 import settings
 import utils
+
+
+COMET_API_KEY = os.environ.get("COMET_API_KEY")
+
+if COMET_API_KEY:
+    # Record experiment in Comet
+    from comet_ml import Experiment
+
+    experiment  = Experiment(api_key=COMET_API_KEY)
+
+    hyper_params = dict(settings.MODEL)
+    hyper_params.pop("model", None)
+    hyper_params["training_data"] = settings.args.data_path
+    hyper_params["epochs"] = settings.EPOCHS
+    hyper_params["learning_rate"] = settings.LEARNING_RATE
+    hyper_params["batchsize"] = settings.BATCH_SIZE
+    hyper_params["glove_path"] = settings.DATA_KWARGS["glove_path"]
+    hyper_params["GPU"] = settings.GPU
+    hyper_params["hostname"] = os.environ.get("HOSTNAME") or "(undefined)"
+
+    experiment.log_multiple_params(hyper_params)
+
+
+
 
 # Instansiate dataset
 dataset = settings.DATASET(settings.args.data_path, **settings.DATA_KWARGS)
@@ -86,6 +110,9 @@ for epoch in range(settings.EPOCHS):
         if i % 10 == 0:
             sys.stdout.write("\rIter {}/{}, loss: {}".format(i, length, float(loss)))
     print("Epoch finished with last loss: {}".format(float(loss)))
+
+    if COMET_API_KEY:    
+        experiment.log_metric("training_loss", float(loss))
 
     # Visualize distribution and save model checkpoint
     name = "{}_epoch{}.params".format(model.get_name(), epoch)
