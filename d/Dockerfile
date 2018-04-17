@@ -10,9 +10,7 @@ COPY glove.6B.50d.txt.gz /glove.6B.50d.txt.gz
 WORKDIR /glove
 RUN sudo gunzip /glove.6B.50d.txt.gz
 
-WORKDIR /logs
-WORKDIR /code/checkpoints
-
+USER root
 
 WORKDIR /
 

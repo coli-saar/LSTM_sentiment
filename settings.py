@@ -19,9 +19,6 @@ LEARNING_RATE = 0.001
 BATCH_SIZE = 100
 GPU = torch.cuda.is_available()
 
-print("available")
-print(GPU)
-
 MODEL = {
     "model": models.PureGRU,
     "model_name": "PureGRU",
@@ -43,9 +40,6 @@ VISUALIZE = args.visualize
 CHECKPOINT_DIR = "checkpoints"
 
 GPU = torch.cuda.is_available() and args.enable_cuda
-
-print("enable")
-print(args.enable_cuda)
 
 HIST_OPTS = dict(numbins=20,
                  xtickmin=0,

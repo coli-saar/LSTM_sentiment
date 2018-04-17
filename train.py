@@ -29,13 +29,6 @@ if COMET_API_KEY:
 
     experiment.log_multiple_params(hyper_params)
 
-
-print(settings.GPU)
-if not settings.GPU:
-    print("no gpu??")
-    sys.exit(1)
-
-
 # Instansiate dataset
 dataset = settings.DATASET(settings.args.data_path, **settings.DATA_KWARGS)
 data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
