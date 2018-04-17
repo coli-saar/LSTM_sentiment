@@ -9,6 +9,9 @@ import settings
 import utils
 
 
+print("Use CUDA: {}".format(settings.GPU))
+
+
 COMET_API_KEY = os.environ.get("COMET_API_KEY")
 
 if COMET_API_KEY:
