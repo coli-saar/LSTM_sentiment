@@ -5,4 +5,4 @@ services:
     working_dir: /code
     environment:
       - PYTHONIOENCODING=utf8
-    command: python -u train.py
+    command: python -u groupmodel.py #train.py
