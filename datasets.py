@@ -75,6 +75,23 @@ class YelpReviewsWordHash(Dataset):
         return Variable(torch.from_numpy(features)), Variable(torch.from_numpy(targets))
 
 
+class UserDict:
+    def __init__(self):
+        self.user_to_id = dict()
+        self.id_to_user = []
+
+    def lookup(self, user):
+        if user in self.user_to_id:
+            return self.user_to_id[user]
+        else:
+            id = len(self.id_to_user)
+            self.user_to_id[user] = id
+            self.id_to_user.append(user)
+            return id
+
+    def num_users(self):
+        return len(self.id_to_user)
+
 class GlovePretrained50d(Dataset):
     """ Dataset that converts the sentences using pretrained 50-dimensional glove word vectors.
     """
@@ -82,6 +99,7 @@ class GlovePretrained50d(Dataset):
     def __init__(self, path, glove_path="./glove.6B.50d.txt"):
         self.reader = filereader.FileReader(path)
         self.pattern = re.compile('[^ \w]+')
+        self.userdict = UserDict()
         print("Reading word vectors...")
         self.vocab, self.vec = torchwordemb.load_glove_text(glove_path)
         print("Done!")
@@ -92,6 +110,10 @@ class GlovePretrained50d(Dataset):
     def __getitem__(self, item):
         line = self.reader[item]
         data = json.loads(line)
+
+        user = data["user_id"]
+        userid = self.userdict.lookup(user)
+
         features = data["text"]
         features = self.pattern.sub('', features.lower())
 
@@ -106,7 +128,7 @@ class GlovePretrained50d(Dataset):
         keys = ["stars", "useful", "cool", "funny"]
         targets = np.array([float(data[i]) for i in keys], dtype='float32')
 
-        return Variable(features), Variable(torch.from_numpy(targets))
+        return Variable(features), Variable(torch.from_numpy(targets)), userid
 
 
 class RandomData(Dataset):

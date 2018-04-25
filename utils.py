@@ -102,8 +102,10 @@ def collate_to_packed(batch):
     batch = sorted(batch, key=lambda item: -len(item[0]))
     features = [i[0] for i in batch]
     targets = torch.stack([i[1] for i in batch])
+    userids = torch.LongTensor([i[2] for i in batch])
+    print("userids: %s" % userids.size())
 
     features = pack_sequence(features)
     features, lengths = torch.nn.utils.rnn.pad_packed_sequence(features, padding_value=0)
 
-    return features, lengths, targets
+    return features, lengths, targets, userids

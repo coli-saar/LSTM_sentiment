@@ -22,7 +22,6 @@ class GroupModel(nn.Module):
         self.p_group_for_user.weight.requires_grad = False
 
 
-
     def forward(self, x, lengths, userids):
         predictions = [m(x, lengths) for m in self.models]   # K x [1, bs, |Y|]
         prediction_matrix = torch.stack(predictions)         # [K, 1, bs, |Y|]
@@ -41,17 +40,17 @@ class GroupModel(nn.Module):
         return weighted_predictions
 
 
-
-
-gm = GroupModel(3, 2, EmbeddingGRU, hidden_size=5, num_layers=1, embedding_dim=2)
-
-xx = [Variable(LongTensor([1, 2])), Variable(LongTensor([3,4]))]
-features = utils.pack_sequence(xx)
-x, lengths = torch.nn.utils.rnn.pad_packed_sequence(features, padding_value=0)
-
-userids = torch.LongTensor([1, 1])
-
-pred = gm(x, lengths, userids)
-
-print(pred.size())
-print(pred)
+#
+#
+# gm = GroupModel(3, 2, EmbeddingGRU, hidden_size=5, num_layers=1, embedding_dim=2)
+#
+# xx = [Variable(LongTensor([1, 2])), Variable(LongTensor([3,4]))]
+# features = utils.pack_sequence(xx)
+# x, lengths = torch.nn.utils.rnn.pad_packed_sequence(features, padding_value=0)
+#
+# userids = torch.LongTensor([1, 1])
+#
+# pred = gm(x, lengths, userids)
+#
+# print(pred.size())
+# print(pred)

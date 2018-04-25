@@ -37,6 +37,8 @@ dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
 data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
                          shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed)
 
+print(dataset.userdict.num_users())
+
 # Define model and optimizer
 model = utils.generate_model_from_settings()
 optimizer = torch.optim.Adam(model.parameters(), lr=settings.LEARNING_RATE)
@@ -71,7 +73,7 @@ for epoch in range(settings.EPOCHS):
     # Main train loop
     length = len(dataset)/settings.BATCH_SIZE
     print("Starting epoch {} with length {}".format(epoch, length))
-    for i, (feature, lengths, target) in enumerate(data_loader):
+    for i, (feature, lengths, target, userids) in enumerate(data_loader):
         # print("ft: %s" % str(feature))
         # print("le: %s" % str(lengths))
         # print("tg: %s" % str(target))
