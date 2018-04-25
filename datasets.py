@@ -100,8 +100,17 @@ class GlovePretrained50d(Dataset):
         self.reader = filereader.FileReader(path)
         self.pattern = re.compile('[^ \w]+')
         self.userdict = UserDict()
+
         print("Reading word vectors...")
         self.vocab, self.vec = torchwordemb.load_glove_text(glove_path)
+
+        print("Collecting user IDs ...")
+        for i in range(len(self.reader)):
+            line = self.reader[i]
+            data = json.loads(line)
+            user = data["user_id"]
+            userid = self.userdict.lookup(user)
+
         print("Done!")
 
     def __len__(self):

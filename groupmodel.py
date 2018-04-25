@@ -17,16 +17,24 @@ class GroupModel(nn.Module):
 
         self.num_groups = num_groups
         self.models = [modelclass(**kwargs) for i in range(num_groups)]
+        for i, m in enumerate(self.models):
+            self.add_module("model%d" % i, m)
 
         self.p_group_for_user = Embedding(num_users, num_groups)
-        self.p_group_for_user.weight.requires_grad = False
+
+        for param in self.p_group_for_user.parameters():
+            param.requires_grad = False
+        # self.p_group_for_user.weight.requires_grad = False
+
+
+        self.name = "GroupModel_%d_%d_%s" % (num_users, num_groups, str(modelclass))
 
 
     def forward(self, x, lengths, userids):
         predictions = [m(x, lengths) for m in self.models]   # K x [1, bs, |Y|]
         prediction_matrix = torch.stack(predictions)         # [K, 1, bs, |Y|]
         num_outputs = prediction_matrix.size()[-1]           # = |Y|
-        prediction_matrix = prediction_matrix.view(self.num_groups, -1, num_outputs)  # [K, bs, |Y|]
+        prediction_matrix = prediction_matrix.view(self.num_groups, -1, num_outputs)  # [K, bs, |Y|]  # XXX
         prediction_matrix = torch.transpose(prediction_matrix, 0, 1)  # [bs, K, |Y|]
         prediction_matrix = torch.transpose(prediction_matrix, 1, 2)  # [bs, |Y|, K]
         # describe("prediction_matrix trans2", prediction_matrix)
@@ -37,7 +45,14 @@ class GroupModel(nn.Module):
 
         weighted_predictions = torch.bmm(prediction_matrix, group_probs) # [bs, |Y|, 1]
         weighted_predictions = torch.squeeze(weighted_predictions, 2)    # [bs, |Y|]
+
+        weighted_predictions = torch.unsqueeze(weighted_predictions, 1) # [bs, 1, |Y|]  # XXX
+        # describe("wp", weighted_predictions)
+
         return weighted_predictions
+
+    def get_name(self):
+        return self.name
 
 
 #

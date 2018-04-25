@@ -1,6 +1,7 @@
 import torch
 import os
 import settings
+from groupmodel import GroupModel
 
 
 def save_model_params(model, name):
@@ -23,6 +24,8 @@ def generate_model_from_settings():
     """ Uses the information in the settings.MODEL to generate a model """
     return settings.MODEL["model"](**settings.MODEL)
 
+def generate_group_model_from_settings(num_users, num_groups):
+    return GroupModel(num_users, num_groups, settings.MODEL["model"], **settings.MODEL)
 
 def pad_sequence(sequences, batch_first=False):
     r"""Pad a list of variable length Variables with zero

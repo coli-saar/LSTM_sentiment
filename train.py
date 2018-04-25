@@ -37,11 +37,21 @@ dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
 data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
                          shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed)
 
-print(dataset.userdict.num_users())
+# print(dataset.userdict.num_users())
+# print(dataset.userdict.id_to_user)
+# sys.exit(0)
+
+num_users = dataset.userdict.num_users()
+num_groups = 2
+
+print("Training model with %d users in %d groups." % (num_users, num_groups))
 
 # Define model and optimizer
-model = utils.generate_model_from_settings()
-optimizer = torch.optim.Adam(model.parameters(), lr=settings.LEARNING_RATE)
+# model = utils.generate_model_from_settings()
+model = utils.generate_group_model_from_settings(num_users, num_groups)
+
+parameters = filter(lambda p:p.requires_grad, model.parameters())
+optimizer = torch.optim.Adam(parameters, lr=settings.LEARNING_RATE)
 
 # Log file is namespaced with the current model
 log_file = "logs/{}_{}.csv".format(model.get_name(), settings.data_path.split("/")[-1].split(".json")[0])
@@ -82,7 +92,7 @@ for epoch in range(settings.EPOCHS):
             feature = feature.cuda(async=True)
             target = target.cuda(async=True)
 
-        out = model(feature, lengths)
+        out = model(feature, lengths, userids)
 
         # Loss computation and weight update step
         loss = torch.mean((out[0, :, 0] - target[:, 0])**2)
