@@ -72,6 +72,10 @@ for epoch in range(settings.EPOCHS):
     length = len(dataset)/settings.BATCH_SIZE
     print("Starting epoch {} with length {}".format(epoch, length))
     for i, (feature, lengths, target) in enumerate(data_loader):
+        # print("ft: %s" % str(feature))
+        # print("le: %s" % str(lengths))
+        # print("tg: %s" % str(target))
+
         if settings.GPU:
             feature = feature.cuda(async=True)
             target = target.cuda(async=True)
