@@ -79,6 +79,7 @@ if settings.VISUALIZE:
     counter = 0
 
 for epoch in range(settings.EPOCHS):
+    model.start_epoch()
 
     # Main train loop
     length = len(dataset)/settings.BATCH_SIZE
@@ -93,6 +94,9 @@ for epoch in range(settings.EPOCHS):
             target = target.cuda(async=True)
 
         out = model(feature, lengths, userids)
+
+        # collect likelihoods for reestimation of group assignments
+        # self.collect_likelihoods()
 
         # Loss computation and weight update step
         loss = torch.mean((out[0, :, 0] - target[:, 0])**2)
@@ -128,6 +132,8 @@ for epoch in range(settings.EPOCHS):
             if COMET_API_KEY:
                 step = i + epoch*length
                 experiment.log_metric("training_loss", float(loss), step=step)
+
+    model.end_epoch()
 
     print("Epoch finished with last loss: {}".format(float(loss)))
 

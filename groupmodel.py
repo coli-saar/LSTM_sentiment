@@ -16,26 +16,57 @@ class GroupModel(nn.Module):
     def __init__(self, num_users, num_groups, modelclass, **kwargs):
         super().__init__()
 
-        # set up K copies of the underlying model
         self.num_groups = num_groups
+        self.num_users = num_users
+
+        # set up K copies of the underlying model
         self.models = [modelclass(**kwargs) for i in range(num_groups)]
         for i, m in enumerate(self.models):
             self.add_module("model%d" % i, m)
 
-        # create matrix for P(g|u)
-        self.np_group_for_user = np.zeros([num_users, num_groups], dtype=np.float32)
-        self.p_group_for_user = Embedding(num_users, num_groups)
-        self.p_group_for_user.weight.data = torch.from_numpy(self.np_group_for_user) # can now make changes to emb weights by changing numpy array
-        self.p_group_for_user.weight.requires_grad = False
+        # create matrix for posteriors P(g|D_u)
+        self.np_gu_posterior = np.zeros([num_users, num_groups], dtype=np.float32)
+        self.gu_posterior = Embedding(num_users, num_groups)
+        self.gu_posterior.weight.data = torch.from_numpy(self.np_gu_posterior) # can now make changes to emb weights by changing numpy array
+        self.gu_posterior.weight.requires_grad = False
 
-        # initialize P(g|u)
+        # initialize posteriors P(g|D_u)
         for i in range(num_users):
-            self.np_group_for_user[i] = np.random.dirichlet(np.ones(num_groups))
+            self.np_gu_posterior[i] = np.random.dirichlet(np.ones(num_groups))
 
-        print(self.p_group_for_user.weight)
+        # set up data structure for priors P(g)
+        self.np_g_prior = np.zeros(num_groups, dtype=np.float32)
 
         self.name = "GroupModel_%d_%d_%s" % (num_users, num_groups, str(modelclass))
 
+    # call at the beginning of each training epoch
+    def start_epoch(self):
+        self.recalculate_priors()
+        self.reset_likelihoods()
+
+    # call at the end of each training epoch
+    def end_epoch(self):
+        self.recalculate_posteriors()
+
+    def recalculate_priors(self):
+        self.np_g_prior = self.np_gu_posterior.sum(axis=0) / self.num_users
+
+    def recalculate_posteriors(self):
+        # calculate P(g, D_u)
+        joint = self.np_g_prior * self.likelihoods # (num_users, num_groups)
+        Z = joint.sum(axis=1) # (num_users)
+        self.np_gu_posterior = (joint.transpose() / Z).transpose() # (num_users, num_groups)
+
+    def reset_likelihoods(self):
+        self.likelihoods = np.ones([self.num_users, self.num_groups], dtype=np.float32)
+
+    # call after each call to forward during training
+    def collect_likelihoods(self, likelihoods, userids):
+        # likelihoods: np.array of shape [bs, G], where likelihoods[i,g] = P_g(yi|xi)
+        # userids: [uid_1, ..., uid_bs]
+        for i in range(len(likelihoods)):
+            u = userids[i]
+            self.likelihoods[u] *= likelihoods[i]
 
     def forward(self, x, lengths, userids):
         predictions = [m(x, lengths) for m in self.models]   # K x [1, bs, |Y|]
@@ -46,7 +77,7 @@ class GroupModel(nn.Module):
         prediction_matrix = torch.transpose(prediction_matrix, 1, 2)  # [bs, |Y|, K]
         # describe("prediction_matrix trans2", prediction_matrix)
 
-        group_probs = self.p_group_for_user(userids)        # [bs, K]
+        group_probs = self.gu_posterior(userids)        # [bs, K]
         group_probs = torch.unsqueeze(group_probs, 2) # [bs, K, 1]
         # describe("gp", group_probs)
 
