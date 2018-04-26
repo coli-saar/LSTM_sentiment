@@ -32,14 +32,10 @@ if COMET_API_KEY:
 
     experiment.log_multiple_params(hyper_params)
 
-# Instansiate dataset
+# Instanstiate dataset
 dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
 data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
-                         shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed)
-
-# print(dataset.userdict.num_users())
-# print(dataset.userdict.id_to_user)
-# sys.exit(0)
+                         shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
 
 num_users = dataset.userdict.num_users()
 num_groups = 2
@@ -78,6 +74,8 @@ if settings.VISUALIZE:
 
     counter = 0
 
+lossfn = torch.nn.NLLLoss()
+
 for epoch in range(settings.EPOCHS):
     model.start_epoch()
 
@@ -85,21 +83,29 @@ for epoch in range(settings.EPOCHS):
     length = len(dataset)/settings.BATCH_SIZE
     print("Starting epoch {} with length {}".format(epoch, length))
     for i, (feature, lengths, target, userids) in enumerate(data_loader):
-        # print("ft: %s" % str(feature))
-        # print("le: %s" % str(lengths))
-        # print("tg: %s" % str(target))
-
         if settings.GPU:
             feature = feature.cuda(async=True)
             target = target.cuda(async=True)
 
-        out = model(feature, lengths, userids)
+        out, prediction_matrix = model(userids, feature, lengths)
+        # out: [bs, Y]
+        # prediction_matrix: [bs, Y, K]
+        # target: [bs]
 
-        # collect likelihoods for reestimation of group assignments
-        # self.collect_likelihoods()
+        # collect likelihoods [bs, K] for reestimation of group assignments
+        bs, Y = out.size()
+        likelihoods = np.zeros([bs,num_groups])
+        for i in range(bs):
+            tg = target[i]
+            likelihoods[i] = np.exp(- prediction_matrix[i, tg, :])
 
-        # Loss computation and weight update step
-        loss = torch.mean((out[0, :, 0] - target[:, 0])**2)
+        model.collect_likelihoods(likelihoods, userids)
+
+        # for regression
+        # loss = torch.mean((out[0, :, 0] - target[:, 0])**2)
+
+        loss = lossfn(out, torch.autograd.Variable(target))
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

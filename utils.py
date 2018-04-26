@@ -1,5 +1,9 @@
+import sys
 import torch
 import os
+
+from torch import LongTensor
+
 import settings
 from groupmodel import GroupModel
 
@@ -97,6 +101,26 @@ def pack_sequence(sequences):
         a :class:`PackedSequence` object
     """
     return torch.nn.utils.rnn.pack_padded_sequence(pad_sequence(sequences), [v.size(0) for v in sequences])
+
+
+def make_class(stars):
+    return 1 if stars > 3 else 0
+
+
+def collate_to_packed_for_classification(batch):
+    '''Collates list of samples to minibatch; map stars to 1/0 class and ignore the other ratings'''
+
+    batch = sorted(batch, key=lambda item: -len(item[0]))
+
+    features = [i[0] for i in batch]
+    targets = LongTensor([make_class(i[1][0].data[0]) for i in batch])
+    userids = torch.LongTensor([i[2] for i in batch])
+
+    features = pack_sequence(features)
+    features, lengths = torch.nn.utils.rnn.pad_packed_sequence(features, padding_value=0)
+
+    return features, lengths, targets, userids
+
 
 
 def collate_to_packed(batch):

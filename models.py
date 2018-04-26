@@ -1,3 +1,4 @@
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -67,6 +68,43 @@ class PureGRU(nn.Module):
     def get_name(self):
         return "PureGRU_h{}_l{}_i{}".format(self.hidden_size, self.num_layers, self.input_size)
 
+
+# AK
+# = PureGRU + softmax layer
+class PureGRUClassifier(nn.Module):
+
+    def __init__(self, **kwargs):
+        """
+        Initialize new PureGRU model.
+        :keyword arguments:
+        hidden_size: int, number of hitten units.
+        num_layers: int, Number of recurrent layers
+        """
+        super().__init__()
+        self.hidden_size = kwargs["hidden_size"]
+        self.num_layers = kwargs["num_layers"]
+        self.input_size = kwargs["input_size"]
+
+        self.gru = nn.GRU(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.num_layers)
+        self.pre_output_layer = nn.Linear(self.hidden_size, 2)
+        self.output_layer = nn.LogSoftmax(dim=-1) # normalize along last dimension
+
+        # self.output_layer = nn.Linear(self.hidden_size, 4)
+        #self.h0 = nn.Parameter(torch.randn(self.num_layers, 1, self.hidden_size))
+
+        self.float_tensor = torch.cuda.FloatTensor if settings.GPU else torch.FloatTensor
+
+    def forward(self, padded, lengths):
+        sequence = pack_padded_sequence(padded, lengths)
+        h0 = Variable(self.float_tensor(self.num_layers, len(lengths), self.hidden_size).fill_(0.))
+        output, hn = self.gru(sequence, h0)
+        pre = self.pre_output_layer(hn)
+        # print("pre %s" % str(pre.size()))
+        predictions = self.output_layer(pre)
+        return predictions.squeeze(0) # return [bs, |Y|] instead of [1, bs, |Y|]
+
+    def get_name(self):
+        return "PureGRU_h{}_l{}_i{}".format(self.hidden_size, self.num_layers, self.input_size)
 
 class SimpleLSTM(nn.Module):
 
@@ -194,6 +232,45 @@ class EmbeddingGRU(nn.Module):
 
     def get_name(self):
         return "EmbeddingGRU_h{}_l{}_e{}".format(self.hidden_size, self.num_layers, self.embedding_dim)
+
+
+
+# AKAKAK
+# A classifier variant of EmbeddingGRU, which predicts whether the review was positive (1) or negative (0).
+class EmbeddingGRUClassifier(nn.Module):
+    def __init__(self, **kwargs):
+        """
+        Initialize new PureGRU model.
+        :keyword arguments:
+        hidden_size: int, number of hitten units.
+        num_layers: int, Number of recurrent layers
+        :keyword embedding_dim: Dimensionality of the embeddings.
+        """
+        super().__init__()
+        self.hidden_size = kwargs["hidden_size"]
+        self.num_layers = kwargs["num_layers"]
+        self.embedding_dim = kwargs["embedding_dim"]
+
+        self.char_embeddings = nn.Embedding(256, self.embedding_dim)
+        self.gru = nn.GRU(input_size=self.embedding_dim, hidden_size=self.hidden_size, num_layers=self.num_layers)
+        self.pre_output_layer = nn.Linear(self.hidden_size, 2)
+        self.output_layer = nn.LogSoftmax()
+
+        self.float_tensor = torch.cuda.FloatTensor if settings.GPU else torch.FloatTensor
+
+    def forward(self, padded, lengths):
+        #padded, lengths = pad_packed_sequence(sequence, padding_value=0)
+        #AKAKAK
+        print("padded: %s %s" % (type(padded), str(padded.size())))
+        embeds = self.char_embeddings(padded)
+        sequence = pack_padded_sequence(embeds, lengths)
+        h0 = Variable(self.float_tensor(self.num_layers, len(lengths), self.hidden_size).fill_(0.))
+        output, hn = self.gru(sequence, h0)
+        predictions = self.output_layer(self.pre_output_layer(hn))
+        return predictions
+
+    def get_name(self):
+        return "EmbeddingGRU_C_h{}_l{}_e{}".format(self.hidden_size, self.num_layers, self.embedding_dim)
 
 
 class ConvLSTM(nn.Module):

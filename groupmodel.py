@@ -37,7 +37,7 @@ class GroupModel(nn.Module):
         # set up data structure for priors P(g)
         self.np_g_prior = np.zeros(num_groups, dtype=np.float32)
 
-        self.name = "GroupModel_%d_%d_%s" % (num_users, num_groups, str(modelclass))
+        self.name = "GroupModel(%s)_%d_%d" % (modelclass.__name__, num_users, num_groups)
 
     # call at the beginning of each training epoch
     def start_epoch(self):
@@ -62,48 +62,28 @@ class GroupModel(nn.Module):
 
     # call after each call to forward during training
     def collect_likelihoods(self, likelihoods, userids):
-        # likelihoods: np.array of shape [bs, G], where likelihoods[i,g] = P_g(yi|xi)
+        # likelihoods: np.array of shape [bs, K], where likelihoods[i,g] = P_g(yi|xi)
         # userids: [uid_1, ..., uid_bs]
         for i in range(len(likelihoods)):
             u = userids[i]
             self.likelihoods[u] *= likelihoods[i]
 
-    def forward(self, x, lengths, userids):
-        predictions = [m(x, lengths) for m in self.models]   # K x [1, bs, |Y|]
-        prediction_matrix = torch.stack(predictions)         # [K, 1, bs, |Y|]
-        num_outputs = prediction_matrix.size()[-1]           # = |Y|
-        prediction_matrix = prediction_matrix.view(self.num_groups, -1, num_outputs)  # [K, bs, |Y|]  # XXX
-        prediction_matrix = torch.transpose(prediction_matrix, 0, 1)  # [bs, K, |Y|]
-        prediction_matrix = torch.transpose(prediction_matrix, 1, 2)  # [bs, |Y|, K]
-        # describe("prediction_matrix trans2", prediction_matrix)
+    def forward(self, userids, *original_inputs):
+        predictions = [m(*original_inputs) for m in self.models]         # K x [bs, |Y|]
+        prediction_matrix = torch.stack(predictions)                     # [K, bs, |Y|]
+        prediction_matrix = torch.transpose(prediction_matrix, 0, 1)     # [bs, K, |Y|]
+        prediction_matrix = torch.transpose(prediction_matrix, 1, 2)     # [bs, |Y|, K]
 
-        group_probs = self.gu_posterior(userids)        # [bs, K]
-        group_probs = torch.unsqueeze(group_probs, 2) # [bs, K, 1]
-        # describe("gp", group_probs)
+        group_probs = self.gu_posterior(userids)                         # [bs, K]
+        group_probs = torch.unsqueeze(group_probs, 2)                    # [bs, K, 1]
 
         weighted_predictions = torch.bmm(prediction_matrix, group_probs) # [bs, |Y|, 1]
         weighted_predictions = torch.squeeze(weighted_predictions, 2)    # [bs, |Y|]
 
-        weighted_predictions = torch.unsqueeze(weighted_predictions, 1) # [bs, 1, |Y|]  # XXX
-        # describe("wp", weighted_predictions)
+        return weighted_predictions, prediction_matrix.data.numpy()
 
-        return weighted_predictions
 
     def get_name(self):
         return self.name
 
 
-#
-#
-# gm = GroupModel(3, 2, EmbeddingGRU, hidden_size=5, num_layers=1, embedding_dim=2)
-#
-# xx = [Variable(LongTensor([1, 2])), Variable(LongTensor([3,4]))]
-# features = utils.pack_sequence(xx)
-# x, lengths = torch.nn.utils.rnn.pad_packed_sequence(features, padding_value=0)
-#
-# userids = torch.LongTensor([1, 1])
-#
-# pred = gm(x, lengths, userids)
-#
-# print(pred.size())
-# print(pred)
