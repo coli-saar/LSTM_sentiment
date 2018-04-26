@@ -3,6 +3,7 @@ from torch import FloatTensor, IntTensor, LongTensor, nn
 from torch.autograd import Variable
 from torch.nn import Embedding
 import utils
+import numpy as np
 
 import settings
 from models import PureGRU, EmbeddingGRU
@@ -15,17 +16,23 @@ class GroupModel(nn.Module):
     def __init__(self, num_users, num_groups, modelclass, **kwargs):
         super().__init__()
 
+        # set up K copies of the underlying model
         self.num_groups = num_groups
         self.models = [modelclass(**kwargs) for i in range(num_groups)]
         for i, m in enumerate(self.models):
             self.add_module("model%d" % i, m)
 
+        # create matrix for P(g|u)
+        self.np_group_for_user = np.zeros([num_users, num_groups], dtype=np.float32)
         self.p_group_for_user = Embedding(num_users, num_groups)
+        self.p_group_for_user.weight.data = torch.from_numpy(self.np_group_for_user) # can now make changes to emb weights by changing numpy array
+        self.p_group_for_user.weight.requires_grad = False
 
-        for param in self.p_group_for_user.parameters():
-            param.requires_grad = False
-        # self.p_group_for_user.weight.requires_grad = False
+        # initialize P(g|u)
+        for i in range(num_users):
+            self.np_group_for_user[i] = np.random.dirichlet(np.ones(num_groups))
 
+        print(self.p_group_for_user.weight)
 
         self.name = "GroupModel_%d_%d_%s" % (num_users, num_groups, str(modelclass))
 
