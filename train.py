@@ -2,6 +2,7 @@ import sys, os
 
 import numpy as np
 import torch
+from torch.nn.functional import kl_div
 from torch.utils.data import DataLoader
 from visdom import Visdom
 
@@ -12,6 +13,13 @@ import utils
 print("Use CUDA: {}".format(settings.GPU))
 
 
+# Instanstiate dataset
+dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
+data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
+                         shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
+
+
+# Initialize experiment
 COMET_API_KEY = os.environ.get("COMET_API_KEY")
 
 if COMET_API_KEY:
@@ -32,13 +40,8 @@ if COMET_API_KEY:
 
     experiment.log_multiple_params(hyper_params)
 
-# Instanstiate dataset
-dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
-data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
-                         shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
-
 num_users = dataset.userdict.num_users()
-num_groups = 2
+num_groups = settings.MODEL["groups"]
 
 print("Training model with %d users in %d groups." % (num_users, num_groups))
 
@@ -76,18 +79,26 @@ if settings.VISUALIZE:
 
 lossfn = torch.nn.NLLLoss()
 
+def KL(p, q):
+    return np.sum(np.where(p != 0, p * np.log(p / q), 0))
+
+def decay(loss, epoch):
+    # return loss/np.power(epoch+1, 0.2)/100
+    return 0
+
 for epoch in range(settings.EPOCHS):
     model.start_epoch()
 
     # Main train loop
     length = len(dataset)/settings.BATCH_SIZE
+
     print("Starting epoch {} with length {}".format(epoch, length))
     for i, (feature, lengths, target, userids) in enumerate(data_loader):
         if settings.GPU:
             feature = feature.cuda(async=True)
             target = target.cuda(async=True)
 
-        out, prediction_matrix = model(userids, feature, lengths)
+        out, prediction_matrix, t_prediction_matrix = model(userids, feature, lengths)
         # out: [bs, Y]
         # prediction_matrix: [bs, Y, K]
         # target: [bs]
@@ -95,16 +106,26 @@ for epoch in range(settings.EPOCHS):
         # collect likelihoods [bs, K] for reestimation of group assignments
         bs, Y = out.size()
         likelihoods = np.zeros([bs,num_groups])
+        kl_loss = None
+        prev_t_likelihood = None
         for i in range(bs):
             tg = target[i]
-            likelihoods[i] = np.exp(- prediction_matrix[i, tg, :])
+            likelihoods[i] = np.exp(prediction_matrix[i, tg, :])
+
+            lik = t_prediction_matrix[i, tg, :]
+            if prev_t_likelihood is not None:
+                kld = kl_div(lik, prev_t_likelihood)
+                if kl_loss is not None:
+                    kl_loss += kld
+                else:
+                    kl_loss = kld
+            prev_t_likelihood = torch.exp(lik).detach()
+
 
         model.collect_likelihoods(likelihoods, userids)
 
-        # for regression
-        # loss = torch.mean((out[0, :, 0] - target[:, 0])**2)
-
-        loss = lossfn(out, torch.autograd.Variable(target))
+        train_loss = lossfn(out, torch.autograd.Variable(target))
+        loss = train_loss - decay(kl_loss, epoch)
 
         optimizer.zero_grad()
         loss.backward()
@@ -139,7 +160,19 @@ for epoch in range(settings.EPOCHS):
                 step = i + epoch*length
                 experiment.log_metric("training_loss", float(loss), step=step)
 
-    model.end_epoch()
+    mean_entropy = model.end_epoch()
+    if COMET_API_KEY:
+        step = (epoch+1)*length
+        ent = model.mean_posterior_entropy()
+        # cos = model.cosine_distance()
+        experiment.log_metric("mean_entropy", ent, step=step)
+        experiment.log_metric("training_loss", float(train_loss), step=step)
+        experiment.log_metric("kl_loss/100", float(kl_loss/100), step=step)
+        experiment.log_metric("loss", float(loss), step=step)
+        # experiment.log_metric("cos_weights", cos, step=step)
+        experiment.log_metric("diff_predictions", model.mean_sumcos(), step=step)
+
+    # print("mean sc %f" % model.mean_sumcos())
 
     print("Epoch finished with last loss: {}".format(float(loss)))
 

@@ -15,14 +15,14 @@ parser.add_argument('--port', action='store', help='Port when using live evaluat
 parser.add_argument('--host', action='store', help='Host when using live evaluation server')
 args = parser.parse_args()
 
-EPOCHS = 20
+EPOCHS = 500
 LEARNING_RATE = 0.001
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE") or "100")
 GPU = torch.cuda.is_available()
 
 MODEL = {
     "model": models.PureGRUClassifier,
-    "model_name": "PureGRU",
+    "model_name": "PureGRUClassifier",
     "embedding_dim": 50,
     "input_size": 50,
     "hidden_size": 128,
@@ -30,6 +30,7 @@ MODEL = {
     "kernel_size": 5,
     "intermediate_size": 32,
     "dropout": 0.0,
+    "groups": 2
 }
 
 DATASET = datasets.GlovePretrained50d
