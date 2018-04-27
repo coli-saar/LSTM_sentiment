@@ -1,6 +1,8 @@
 import sys, os
 
+import math
 import numpy as np
+import time
 import torch
 from torch.nn.functional import kl_div
 from torch.utils.data import DataLoader
@@ -13,10 +15,65 @@ import utils
 print("Use CUDA: {}".format(settings.GPU))
 
 
-# Instanstiate dataset
+# Instantiate dataset for training ...
 dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
 data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
                          shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
+
+# ... and dev set
+if settings.args.load_path:
+    dev_dataset = settings.DATASET(settings.args.load_path, **settings.DATA_KWARGS)
+    dev_data_loader = DataLoader(dataset, batch_size=1,
+                         shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
+
+
+
+def eval_accuracy(model, data_loader):
+    num_correct = 0
+    num_total = 0
+    sum_lik = 0
+
+    predict_time = 0
+
+    ts = time.time()
+
+    dict_group_probs = {} # userid -> group_probs
+
+    print("eval")
+    for i, (feature, lengths, target, userids) in enumerate(data_loader):
+        # userids: LongTensor shape [1]
+
+        userid = userids[0]     # int
+        gold_target = target[0] # int
+        group_probs = dict_group_probs.get(userid, model.np_g_prior)
+
+        t_prediction_matrix, updated_group_probs = model.predict(group_probs, gold_target, feature, lengths)
+        prediction_matrix = t_prediction_matrix.data.numpy()
+
+        # t_pred: tensor, [|Y|]
+        # ugp: ndarray, [K]
+
+        # collect statistics
+        num_total += 1
+        predicted = np.argmax(prediction_matrix)
+
+        if predicted == gold_target:
+            num_correct += 1
+
+        sum_lik += math.exp(prediction_matrix[gold_target])
+
+        # update group probs for user
+        dict_group_probs[userid] = updated_group_probs
+
+    te = time.time()
+    print("eval took %f sec" % (te-ts))
+    print("acc %d/%d" % (num_correct, num_total))
+
+    return float(num_correct)/num_total, sum_lik/num_total
+
+
+
+
 
 
 # Initialize experiment
@@ -86,6 +143,19 @@ def decay(loss, epoch):
     # return loss/np.power(epoch+1, 0.2)/100
     return 0
 
+def vnp(variable):
+    if settings.GPU:
+        return variable.cpu().data.numpy()
+    else:
+        return variable.data.numpy()
+
+def tnp(tensor):
+    if settings.GPU:
+        return tensor.cpu().numpy()
+    else:
+        return tensor.numpy()
+
+
 for epoch in range(settings.EPOCHS):
     model.start_epoch()
 
@@ -100,11 +170,12 @@ for epoch in range(settings.EPOCHS):
             userids = userids.cuda(async=True)
 
         out, t_prediction_matrix = model(userids, feature, lengths)
+        prediction_matrix = vnp(t_prediction_matrix)
 
-        if settings.GPU:
-            prediction_matrix = t_prediction_matrix.cpu().data.numpy()
-        else:
-            prediction_matrix = t_prediction_matrix.data.numpy()
+        # if settings.GPU:
+        #     prediction_matrix = t_prediction_matrix.cpu().data.numpy()
+        # else:
+        #     prediction_matrix = t_prediction_matrix.data.numpy()
 
         # out: [bs, Y]
         # (t_) prediction_matrix: [bs, Y, K]
@@ -112,24 +183,24 @@ for epoch in range(settings.EPOCHS):
 
         # collect likelihoods [bs, K] for reestimation of group assignments
         bs, Y = out.size()
-        likelihoods = np.zeros([bs,num_groups])
+        log_likelihoods = np.zeros([bs, num_groups])
         kl_loss = None
         prev_t_likelihood = None
         for i in range(bs):
             tg = target[i]
-            likelihoods[i] = np.exp(prediction_matrix[i, tg, :])
+            log_likelihoods[i] = prediction_matrix[i, tg, :]
 
             lik = t_prediction_matrix[i, tg, :]
             if prev_t_likelihood is not None:
-                kld = kl_div(lik, prev_t_likelihood)
+                kld = kl_div(lik, torch.exp(prev_t_likelihood))
                 if kl_loss is not None:
                     kl_loss += kld
                 else:
                     kl_loss = kld
-            prev_t_likelihood = torch.exp(lik).detach()
+            prev_t_likelihood = lik.detach()
 
 
-        model.collect_likelihoods(likelihoods, userids)
+        model.collect_log_likelihoods(log_likelihoods, userids)
 
         train_loss = lossfn(out, torch.autograd.Variable(target))
         loss = train_loss - decay(kl_loss, epoch)
@@ -167,7 +238,13 @@ for epoch in range(settings.EPOCHS):
                 step = i + epoch*length
                 experiment.log_metric("training_loss", float(loss), step=step)
 
-    mean_entropy = model.end_epoch()
+    model.end_epoch()
+
+    if settings.args.load_path:
+        eval_acc, mean_eval_likelihood = eval_accuracy(model, dev_data_loader)
+        print("val acc: %f" % eval_acc)
+        print("val lik: %f" % mean_eval_likelihood)
+
     if COMET_API_KEY:
         step = (epoch+1)*length
         ent = model.mean_posterior_entropy()
@@ -177,7 +254,11 @@ for epoch in range(settings.EPOCHS):
         experiment.log_metric("kl_loss/100", float(kl_loss/100), step=step)
         experiment.log_metric("loss", float(loss), step=step)
         # experiment.log_metric("cos_weights", cos, step=step)
-        experiment.log_metric("diff_predictions", model.mean_sumcos(), step=step)
+        experiment.log_metric("diff_predictions", model.mean_sumcos(), step=step) # mean absolute diff in log-likelihoods
+
+        if settings.args.load_path:
+            experiment.log_metric("dev accuracy", eval_acc)
+            experiment.log_metric("mean dev likelihood", mean_eval_likelihood)
 
     # print("mean sc %f" % model.mean_sumcos())
 

@@ -1,4 +1,6 @@
 import sys
+
+import time
 import torch
 from torch import FloatTensor, IntTensor, LongTensor, nn
 from torch.autograd import Variable
@@ -63,7 +65,7 @@ class GroupModel(nn.Module):
 
     def recalculate_posteriors(self):
         # calculate P(g, D_u)
-        joint = self.np_g_prior * self.likelihoods # (num_users, num_groups)
+        joint = self.np_g_prior * np.exp(self.log_likelihoods) # (num_users, num_groups)
         Z = joint.sum(axis=1) # (num_users)
         self.np_gu_posterior = (joint.transpose() / Z).transpose() # (num_users, num_groups)
 
@@ -71,7 +73,7 @@ class GroupModel(nn.Module):
         s = 0
         for i in range(self.num_users):
             pk = self.np_gu_posterior[i]
-            s += -np.sum(pk * np.log2(pk), axis=0) #.   scipy.stats.entropy()
+            s += -np.sum(pk * np.log2(pk), axis=0)
         return (s/self.num_users)
 
     def cosine_distance(self):
@@ -94,29 +96,30 @@ class GroupModel(nn.Module):
         return ret
 
     def reset_likelihoods(self):
-        self.likelihoods = np.ones([self.num_users, self.num_groups], dtype=np.float32)
+        self.log_likelihoods = np.zeros([self.num_users, self.num_groups], dtype=np.float32)
         self.sumcos = 0
         self.Z_sumcos = 0
 
     # call after each call to forward during training
-    def collect_likelihoods(self, likelihoods, userids):
+    def collect_log_likelihoods(self, log_likelihoods, userids):
         # likelihoods: np.array of shape [bs, K], where likelihoods[i,g] = P_g(yi|xi)
         # userids: [uid_1, ..., uid_bs]
         for i in range(len(userids)):
             u = userids[i]
-            self.likelihoods[u] *= likelihoods[i]
+            self.log_likelihoods[u] += log_likelihoods[i]
 
         if self.num_groups > 1:
             # print("\n")
             # print(likelihoods[:,0])
             # print(likelihoods[:,1])
-            self.sumcos += self.vecdiff(likelihoods[:,0], likelihoods[:,1])
+            self.sumcos += self.vecdiff(log_likelihoods[:,0], log_likelihoods[:,1])
             self.Z_sumcos += 1
 
     def mean_sumcos(self):
-        # print("sc %f" % self.sumcos)
-        # print("Z %f" % self.Z_sumcos)
-        return self.sumcos/self.Z_sumcos
+        if self.num_groups == 1:
+            return 0
+        else:
+            return self.sumcos/self.Z_sumcos
 
     def forward(self, userids, *original_inputs):
         predictions = [m(*original_inputs) for m in self.models]         # K x [bs, |Y|]
@@ -124,13 +127,35 @@ class GroupModel(nn.Module):
         prediction_matrix = torch.transpose(prediction_matrix, 0, 1)     # [bs, K, |Y|]
         prediction_matrix = torch.transpose(prediction_matrix, 1, 2)     # [bs, |Y|, K]
 
-        group_probs = self.gu_posterior(userids)                         # [bs, K]           # hier userids CPU LongTensor
+        group_probs = self.gu_posterior(userids)                         # [bs, K]
         group_probs = torch.unsqueeze(group_probs, 2)                    # [bs, K, 1]
 
         weighted_predictions = torch.bmm(prediction_matrix, group_probs) # [bs, |Y|, 1]
         weighted_predictions = torch.squeeze(weighted_predictions, 2)    # [bs, |Y|]
 
         return weighted_predictions, prediction_matrix
+
+    def predict(self, group_probs, gold_target, *original_inputs):
+        # group_probs: numpy array [K]
+        # original_inputs: with bs=1
+
+        # compute output probs based on given group probs
+        predictions = [m(*original_inputs) for m in self.models]  # K x [bs, |Y|]     ## this line is the performance bottleneck
+        prediction_matrix = torch.stack(predictions)  # [K, bs, |Y|]
+        prediction_matrix = torch.transpose(prediction_matrix, 0, 1)  # [bs, K, |Y|]
+        prediction_matrix = torch.transpose(prediction_matrix, 1, 2)  # [bs, |Y|, K]
+
+        v_group_probs = Variable(torch.from_numpy(group_probs.reshape(1,-1,1)))           # [1, K, 1]
+
+        weighted_predictions = torch.bmm(prediction_matrix, v_group_probs) # [bs, |Y|, 1]
+        weighted_predictions = weighted_predictions.view(-1)             # [|Y|]
+
+        # Bayesian update of group probs
+        updated_group_probs = prediction_matrix.data[0, gold_target, :].numpy() * group_probs
+        updated_group_probs /= sum(updated_group_probs)
+
+        return weighted_predictions, updated_group_probs
+
 
 
     def get_name(self):

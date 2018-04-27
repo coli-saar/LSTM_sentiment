@@ -30,7 +30,7 @@ MODEL = {
     "kernel_size": 5,
     "intermediate_size": 32,
     "dropout": 0.0,
-    "groups": 2
+    "groups": 1
 }
 
 DATASET = datasets.GlovePretrained50d
