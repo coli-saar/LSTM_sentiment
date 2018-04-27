@@ -130,7 +130,7 @@ class GroupModel(nn.Module):
         weighted_predictions = torch.bmm(prediction_matrix, group_probs) # [bs, |Y|, 1]
         weighted_predictions = torch.squeeze(weighted_predictions, 2)    # [bs, |Y|]
 
-        return weighted_predictions, prediction_matrix.data.numpy(), prediction_matrix
+        return weighted_predictions, prediction_matrix
 
 
     def get_name(self):

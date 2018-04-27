@@ -99,9 +99,15 @@ for epoch in range(settings.EPOCHS):
             target = target.cuda(async=True)
             userids = userids.cuda(async=True)
 
-        out, prediction_matrix, t_prediction_matrix = model(userids, feature, lengths)
+        out, t_prediction_matrix = model(userids, feature, lengths)
+
+        if settings.GPU:
+            prediction_matrix = t_prediction_matrix.cpu().data.numpy()
+        else:
+            prediction_matrix = t_prediction_matrix.data.numpy()
+
         # out: [bs, Y]
-        # prediction_matrix: [bs, Y, K]
+        # (t_) prediction_matrix: [bs, Y, K]
         # target: [bs]
 
         # collect likelihoods [bs, K] for reestimation of group assignments
