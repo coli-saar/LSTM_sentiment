@@ -124,7 +124,7 @@ class GroupModel(nn.Module):
         prediction_matrix = torch.transpose(prediction_matrix, 0, 1)     # [bs, K, |Y|]
         prediction_matrix = torch.transpose(prediction_matrix, 1, 2)     # [bs, |Y|, K]
 
-        group_probs = self.gu_posterior(userids)                         # [bs, K]
+        group_probs = self.gu_posterior(userids)                         # [bs, K]           # hier userids CPU LongTensor
         group_probs = torch.unsqueeze(group_probs, 2)                    # [bs, K, 1]
 
         weighted_predictions = torch.bmm(prediction_matrix, group_probs) # [bs, |Y|, 1]

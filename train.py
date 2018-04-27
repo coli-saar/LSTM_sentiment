@@ -97,6 +97,7 @@ for epoch in range(settings.EPOCHS):
         if settings.GPU:
             feature = feature.cuda(async=True)
             target = target.cuda(async=True)
+            userids = userids.cuda(async=True)
 
         out, prediction_matrix, t_prediction_matrix = model(userids, feature, lengths)
         # out: [bs, Y]
