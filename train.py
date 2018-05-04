@@ -53,6 +53,9 @@ def eval_accuracy(group_model, data_loader):
         gold_target = target[0] # int
         group_probs = dict_group_probs.get(userid, group_model.np_g_prior)
 
+        if settings.GPU:
+            feature = feature.cuda(async=True)
+
         predictions = [model(feature, lengths) for model in models]
         prediction_matrix, updated_group_probs = group_model.predict_categorical(group_probs, gold_target, predictions)
 
