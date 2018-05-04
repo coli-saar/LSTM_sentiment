@@ -1,5 +1,6 @@
 import sys, os
 
+import itertools
 import math
 import numpy as np
 import time
@@ -10,7 +11,7 @@ from visdom import Visdom
 
 import settings
 import utils
-
+from groupmodel import GroupModel
 
 print("Use CUDA: {}".format(settings.GPU))
 
@@ -23,7 +24,7 @@ data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
 # ... and dev set
 if settings.args.load_path:
     dev_dataset = settings.DATASET(settings.args.load_path, **settings.DATA_KWARGS)
-    dev_data_loader = DataLoader(dataset, batch_size=1,
+    dev_data_loader = DataLoader(dev_dataset, batch_size=1,
                          shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
 
 
@@ -104,13 +105,15 @@ print("Training model with %d users in %d groups." % (num_users, num_groups))
 
 # Define model and optimizer
 # model = utils.generate_model_from_settings()
-model = utils.generate_group_model_from_settings(num_users, num_groups)
+# model = utils.generate_group_model_from_settings(num_users, num_groups)
+models = [utils.generate_model_from_settings() for g in range(num_groups)]
+group_model = GroupModel(num_users, num_groups, models)
 
-parameters = filter(lambda p:p.requires_grad, model.parameters())
+parameters = filter(lambda p:p.requires_grad, group_model.parameters())
 optimizer = torch.optim.Adam(parameters, lr=settings.LEARNING_RATE)
 
 # Log file is namespaced with the current model
-log_file = "logs/{}_{}.csv".format(model.get_name(), settings.data_path.split("/")[-1].split(".json")[0])
+log_file = "logs/{}_{}.csv".format(group_model.get_name(), settings.data_path.split("/")[-1].split(".json")[0])
 
 if settings.VISUALIZE:
     # Visualization thorugh visdom
@@ -124,17 +127,19 @@ if settings.VISUALIZE:
 # Move stuff to GPU
 if settings.GPU:
     data_loader.pin_memory = True
-    model.cuda()
+    for model in models:
+        model.cuda()
+    group_model.cuda()
 
-if settings.VISUALIZE:
-    smooth_loss = 7 #approx 2.5^2
-    decay_rate = 0.99
-    smooth_real_dist = np.array([0, 0, 0, 0, 0], dtype=float)
-    smooth_pred_dist = np.array([0, 0, 0, 0, 0], dtype=float)
+# if settings.VISUALIZE:
+#     smooth_loss = 7 #approx 2.5^2
+#     decay_rate = 0.99
+#     smooth_real_dist = np.array([0, 0, 0, 0, 0], dtype=float)
+#     smooth_pred_dist = np.array([0, 0, 0, 0, 0], dtype=float)
+#
+#     counter = 0
 
-    counter = 0
-
-lossfn = torch.nn.NLLLoss()
+lossfn = torch.nn.NLLLoss(reduce=False)
 
 def KL(p, q):
     return np.sum(np.where(p != 0, p * np.log(p / q), 0))
@@ -157,53 +162,68 @@ def tnp(tensor):
 
 
 for epoch in range(settings.EPOCHS):
-    model.start_epoch()
+    group_model.start_epoch()
 
     # Main train loop
     length = len(dataset)/settings.BATCH_SIZE
+    seen_instances_in_epoch = 0
 
     print("Starting epoch {} with length {}".format(epoch, length))
     for i, (feature, lengths, target, userids) in enumerate(data_loader):
+        seen_instances_in_epoch += len(userids)
+
         if settings.GPU:
             feature = feature.cuda(async=True)
             target = target.cuda(async=True)
             userids = userids.cuda(async=True)
 
-        out, t_prediction_matrix = model(userids, feature, lengths)
-        prediction_matrix = vnp(t_prediction_matrix)
 
-        # if settings.GPU:
-        #     prediction_matrix = t_prediction_matrix.cpu().data.numpy()
-        # else:
-        #     prediction_matrix = t_prediction_matrix.data.numpy()
+        predictions = [model(feature, lengths) for model in models]
+        tgt = torch.autograd.Variable(target)
+        losses = [lossfn(out, tgt) for out in predictions]
 
-        # out: [bs, Y]
-        # (t_) prediction_matrix: [bs, Y, K]
-        # target: [bs]
-
-        # collect likelihoods [bs, K] for reestimation of group assignments
-        bs, Y = out.size()
-        log_likelihoods = np.zeros([bs, num_groups])
-        kl_loss = None
-        prev_t_likelihood = None
-        for i in range(bs):
-            tg = target[i]
-            log_likelihoods[i] = prediction_matrix[i, tg, :]
-
-            lik = t_prediction_matrix[i, tg, :]
-            if prev_t_likelihood is not None:
-                kld = kl_div(lik, torch.exp(prev_t_likelihood))
-                if kl_loss is not None:
-                    kl_loss += kld
-                else:
-                    kl_loss = kld
-            prev_t_likelihood = lik.detach()
+        loss = group_model.group_loss(losses, userids)
 
 
-        model.collect_log_likelihoods(log_likelihoods, userids)
 
-        train_loss = lossfn(out, torch.autograd.Variable(target))
-        loss = train_loss - decay(kl_loss, epoch)
+        #
+        # out, t_prediction_matrix = model(userids, feature, lengths)
+        # prediction_matrix = vnp(t_prediction_matrix)
+        #
+        # # if settings.GPU:
+        # #     prediction_matrix = t_prediction_matrix.cpu().data.numpy()
+        # # else:
+        # #     prediction_matrix = t_prediction_matrix.data.numpy()
+        #
+        # # out: [bs, Y]
+        # # (t_) prediction_matrix: [bs, Y, K]
+        # # target: [bs]
+        #
+        # # collect likelihoods [bs, K] for reestimation of group assignments
+        # bs, Y = out.size()
+        # log_likelihoods = np.zeros([bs, num_groups])
+        # kl_loss = None
+        # prev_t_likelihood = None
+        # for i in range(bs):
+        #     tg = target[i]
+        #     log_likelihoods[i] = prediction_matrix[i, tg, :]
+        #
+        #     lik = t_prediction_matrix[i, tg, :]
+        #     if prev_t_likelihood is not None:
+        #         kld = kl_div(lik, torch.exp(prev_t_likelihood))
+        #         if kl_loss is not None:
+        #             kl_loss += kld
+        #         else:
+        #             kl_loss = kld
+        #     prev_t_likelihood = lik.detach()
+        #
+        #
+        # model.collect_log_likelihoods(log_likelihoods, userids)
+        #
+        # train_loss = lossfn(out, torch.autograd.Variable(target))
+
+
+        # loss = train_loss - decay(kl_loss, epoch)
 
         optimizer.zero_grad()
         loss.backward()
@@ -213,32 +233,32 @@ for epoch in range(settings.EPOCHS):
         with open(log_file, 'a') as logfile:
             logfile.write("{},".format(float(loss)))
 
-        # Visualization update
-        if settings.VISUALIZE:
-            smooth_loss = smooth_loss * decay_rate + (1-decay_rate) * loss.data.cpu().numpy()
-            viz.updateTrace(win=loss_plot, X=np.array([counter]), Y=loss.data.cpu().numpy(), name='loss')
-            viz.updateTrace(win=loss_plot, X=np.array([counter]), Y=smooth_loss, name='smooth loss')
-            real_star = target[:, 0].data.cpu().numpy().astype(int)
-            pred_star = out[0, :, 0].data.cpu().numpy().round().clip(1,5).astype(int)
-            for idx in range(len(real_star)):
-                smooth_pred_dist[pred_star[idx]-1] += 1
-                smooth_real_dist[real_star[idx]-1] += 1
-            smooth_real_dist *= decay_rate
-            smooth_pred_dist *= decay_rate
-
-            viz.bar(win=dist_hist, X=smooth_pred_dist)
-            viz.bar(win=real_dist_hist, X=smooth_real_dist)
-
-            counter += 1
+        # # Visualization update
+        # if settings.VISUALIZE:
+        #     smooth_loss = smooth_loss * decay_rate + (1-decay_rate) * loss.data.cpu().numpy()
+        #     viz.updateTrace(win=loss_plot, X=np.array([counter]), Y=loss.data.cpu().numpy(), name='loss')
+        #     viz.updateTrace(win=loss_plot, X=np.array([counter]), Y=smooth_loss, name='smooth loss')
+        #     real_star = target[:, 0].data.cpu().numpy().astype(int)
+        #     pred_star = out[0, :, 0].data.cpu().numpy().round().clip(1,5).astype(int)
+        #     for idx in range(len(real_star)):
+        #         smooth_pred_dist[pred_star[idx]-1] += 1
+        #         smooth_real_dist[real_star[idx]-1] += 1
+        #     smooth_real_dist *= decay_rate
+        #     smooth_pred_dist *= decay_rate
+        #
+        #     viz.bar(win=dist_hist, X=smooth_pred_dist)
+        #     viz.bar(win=real_dist_hist, X=smooth_real_dist)
+        #
+        #     counter += 1
 
         # Progress update
-        if i % 10 == 0:
-            sys.stdout.write("\rIter {}/{}, loss: {}".format(i, length, float(loss)))
-            if COMET_API_KEY:
-                step = i + epoch*length
-                experiment.log_metric("training_loss", float(loss), step=step)
+        # if i % 10 == 0:
+        #     sys.stdout.write("\rIter {}/{}, loss: {}".format(i, length, float(loss)))
+        #     if COMET_API_KEY:
+        #         step = i + epoch*length
+        #         experiment.log_metric("loss", float(loss)/seen_instances_in_epoch, step=step)
 
-    model.end_epoch()
+    group_model.end_epoch()
 
     if settings.args.load_path:
         eval_acc, mean_eval_likelihood = eval_accuracy(model, dev_data_loader)
@@ -247,14 +267,18 @@ for epoch in range(settings.EPOCHS):
 
     if COMET_API_KEY:
         step = (epoch+1)*length
-        ent = model.mean_posterior_entropy()
-        # cos = model.cosine_distance()
+
+        mean_loss = float(loss) / seen_instances_in_epoch
+        ent = group_model.mean_posterior_entropy()
+
         experiment.log_metric("mean_entropy", ent, step=step)
-        experiment.log_metric("training_loss", float(train_loss), step=step)
-        experiment.log_metric("kl_loss/100", float(kl_loss/100), step=step)
-        experiment.log_metric("loss", float(loss), step=step)
-        # experiment.log_metric("cos_weights", cos, step=step)
-        experiment.log_metric("diff_predictions", model.mean_sumcos(), step=step) # mean absolute diff in log-likelihoods
+        experiment.log_metric("loss", mean_loss, step=step)
+
+
+        # cos = model.cosine_distance()
+        # experiment.log_metric("training_loss", float(loss), step=step)
+        # experiment.log_metric("kl_loss/100", float(kl_loss/100), step=step)
+        # experiment.log_metric("diff_predictions", model.mean_sumcos(), step=step) # mean absolute diff in log-likelihoods
 
         if settings.args.load_path:
             experiment.log_metric("dev accuracy", eval_acc)
@@ -266,8 +290,8 @@ for epoch in range(settings.EPOCHS):
 
 
     # Visualize distribution and save model checkpoint
-    name = "{}_epoch{}.params".format(model.get_name(), epoch)
-    utils.save_model_params(model, name)
+    name = "{}_epoch{}.params".format(group_model.get_name(), epoch)
+    utils.save_model_params(group_model, name)
     print("Saved model params as: {}".format(name))
 
 

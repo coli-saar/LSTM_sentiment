@@ -5,4 +5,4 @@ services:
     working_dir: /code
     environment:
       - PYTHONIOENCODING=utf8
-    command: python -u train.py --load-path /data/small_data_validate.json
+    command: python -u train.py #--load-path /data/small_data_validate.json

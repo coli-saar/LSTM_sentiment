@@ -7,6 +7,7 @@ from torch.autograd import Variable
 from torch.nn import Embedding
 import utils
 import numpy as np
+from collections import defaultdict
 
 import settings
 from models import PureGRU, EmbeddingGRU
@@ -16,15 +17,15 @@ def describe(label, x):
     print("%s: type=%s, size=%s" % (label, type(x), x.size()))
 
 class GroupModel(nn.Module):
-    def __init__(self, num_users, num_groups, modelclass, **kwargs):
+    def __init__(self, num_users, num_groups, models): # , modelclass
         super().__init__()
 
         self.num_groups = num_groups
         self.num_users = num_users
 
-        # set up K copies of the underlying model
-        self.models = [modelclass(**kwargs) for i in range(num_groups)]
-        for i, m in enumerate(self.models):
+        # make parameters of the individual models parameters of the group model
+        # self.models = [modelclass(**kwargs) for i in range(num_groups)]
+        for i, m in enumerate(models):
             self.add_module("model%d" % i, m)
 
         # create matrix for posteriors P(g|D_u)
@@ -42,14 +43,14 @@ class GroupModel(nn.Module):
         self.np_g_prior = np.zeros(num_groups, dtype=np.float32)
 
         # set model name
-        underlying_model_name = self.models[0].get_name()
+        # underlying_model_name = self.models[0].get_name()
 
-        self.rnnweights = [m.state_dict()["gru.weight_hh_l0"] for m in self.models]
+        # self.rnnweights = [m.state_dict()["gru.weight_hh_l0"] for m in self.models]
 
         # self.weights0 = self.models[0].state_dict()["gru.weight_hh_l0"]
         # self.weights1 = self.models[1].state_dict()["gru.weight_hh_l0"]
 
-        self.name = "GroupModel(%d)_%s" % (num_groups, underlying_model_name)
+        self.name = "GroupModel(%d)" % (num_groups) # , underlying_model_name)
 
     # call at the beginning of each training epoch
     def start_epoch(self):
@@ -65,7 +66,10 @@ class GroupModel(nn.Module):
 
     def recalculate_posteriors(self):
         # calculate P(g, D_u)
-        joint = self.np_g_prior * np.exp(self.log_likelihoods) # (num_users, num_groups)
+        nll = self.nll.cpu().numpy()
+        likelihoods = np.exp(-nll)  # (U,K)
+
+        joint = self.np_g_prior * likelihoods # np.exp(self.log_likelihoods) # (num_users, num_groups)
         Z = joint.sum(axis=1) # (num_users)
         self.np_gu_posterior = (joint.transpose() / Z).transpose() # (num_users, num_groups)
 
@@ -76,11 +80,11 @@ class GroupModel(nn.Module):
             s += -np.sum(pk * np.log2(pk), axis=0)
         return (s/self.num_users)
 
-    def cosine_distance(self):
-        if self.num_groups > 1:
-            return self.cos(self.rnnweights[0].numpy(), self.rnnweights[1].numpy())
-        else:
-            return 0
+    # def cosine_distance(self):
+    #     if self.num_groups > 1:
+    #         return self.cos(self.rnnweights[0].numpy(), self.rnnweights[1].numpy())
+    #     else:
+    #         return 0
 
     def cos(self, v1, v2):
         v1 = v1.ravel()
@@ -96,13 +100,16 @@ class GroupModel(nn.Module):
         return ret
 
     def reset_likelihoods(self):
-        self.log_likelihoods = np.zeros([self.num_users, self.num_groups], dtype=np.float32)
-        self.sumcos = 0
-        self.Z_sumcos = 0
+        self.nll = settings.cd(torch.zeros((self.num_users, self.num_groups))) # (U,K)
+
+        # self.log_likelihoods = np.zeros([self.num_users, self.num_groups], dtype=np.float32)
+        # self.sumcos = 0
+        # self.Z_sumcos = 0
 
     # call after each call to forward during training
+    # DEPRECATED
     def collect_log_likelihoods(self, log_likelihoods, userids):
-        # likelihoods: np.array of shape [bs, K], where likelihoods[i,g] = P_g(yi|xi)
+        # likelihoods: np.array of shape [bs, K], where likelihoods[i,g] = log P_g(yi|xi)
         # userids: [uid_1, ..., uid_bs]
         for i in range(len(userids)):
             u = userids[i]
@@ -120,6 +127,45 @@ class GroupModel(nn.Module):
             return 0
         else:
             return self.sumcos/self.Z_sumcos
+
+    def generate_umask(self, userids):
+        umask = torch.sparse.LongTensor([len(userids), self.num_users])  # (bs, U)
+        for i in range(len(userids)):
+            umask[i, userids[i]] = 1
+        return umask
+
+    # generate dictionary of userid -> [positions in "userids" list that have userid]
+    def generate_uix(self, userids):
+        uix = defaultdict(list)
+        for ix, val in enumerate(userids):
+            uix[val].append(ix)
+        return uix
+
+    def group_loss(self, losses, userids):
+        # losses = [ (bs), ..., (bs) ]   -> produce e.g. with NLLLoss(reduce=False)
+        # losses[g][i] = - log P(y_i | x_i, g)
+        stacked_losses = torch.stack(losses)               # (K, bs)
+        stacked_losses_t = stacked_losses.transpose(0,1)   # (bs, K)
+
+        # userids = [ uid1, ..., uidn ]
+        group_probs = self.gu_posterior(userids)           # (bs, K)
+
+        # calculate expected loss under user-group posterior from previous iteration
+        weighted_losses = stacked_losses_t * group_probs   # elementwise multiplication; result is (bs, K)
+        total_loss = weighted_losses.sum()                 # sum over groups and instances; result is shape ()
+
+        # accumulate negative log-likelihoods per user
+        # self.nll = torch.FloatTensor([self.num_groups, self.num_users]) # (K, U)
+        uix = self.generate_uix(userids)
+        d_stacked_losses = stacked_losses.detach()
+        for userid, ix in uix.items():
+            ixt = settings.cd(Variable(LongTensor(ix)))
+            nll_for_user = torch.index_select(d_stacked_losses, 1, ixt) # (K, |ix|)
+            nll_for_user = nll_for_user.sum(dim=1)                      # (K)
+            self.nll[userid,:] += nll_for_user.data
+
+        return total_loss
+
 
     def forward(self, userids, *original_inputs):
         predictions = [m(*original_inputs) for m in self.models]         # K x [bs, |Y|]

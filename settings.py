@@ -30,7 +30,7 @@ MODEL = {
     "kernel_size": 5,
     "intermediate_size": 32,
     "dropout": 0.0,
-    "groups": 1
+    "groups": 2
 }
 
 DATASET = datasets.GlovePretrained50d
@@ -50,3 +50,9 @@ HIST_OPTS = dict(numbins=20,
 
 data_path = os.environ.get("DATA_PATH")
 
+
+def cd(tensor):
+    if GPU:
+        return tensor.cuda()
+    else:
+        return tensor
