@@ -5,6 +5,7 @@ import math
 import numpy as np
 import time
 import torch
+from torch.autograd import Variable
 from torch.nn.functional import kl_div
 from torch.utils.data import DataLoader
 from visdom import Visdom
@@ -166,6 +167,7 @@ for epoch in range(settings.EPOCHS):
 
     # Main train loop
     length = len(dataset)/settings.BATCH_SIZE
+    kl_diff = 0
     seen_instances_in_epoch = 0
 
     print("Starting epoch {} with length {}".format(epoch, length))
@@ -183,6 +185,12 @@ for epoch in range(settings.EPOCHS):
         losses = [lossfn(out, tgt) for out in predictions]
 
         loss = group_model.group_loss(losses, userids)
+
+        if num_groups > 1:
+            # predictions[i] are FloatTensors (bs, Y)
+            lik = predictions[0]                             # tensor
+            prev_t_likelihood = predictions[1].detach()
+            kl_diff += float(kl_div(lik, torch.exp(prev_t_likelihood)))
 
 
 
@@ -269,11 +277,12 @@ for epoch in range(settings.EPOCHS):
         step = (epoch+1)*length
 
         mean_loss = float(loss) / seen_instances_in_epoch
+        mean_kl_diff = kl_diff
         ent = group_model.mean_posterior_entropy()
 
         experiment.log_metric("mean_entropy", ent, step=step)
         experiment.log_metric("loss", mean_loss, step=step)
-
+        experiment.log_metric("kl_diff", mean_kl_diff, step=step)
 
         # cos = model.cosine_distance()
         # experiment.log_metric("training_loss", float(loss), step=step)
