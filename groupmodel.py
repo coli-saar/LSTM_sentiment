@@ -133,28 +133,28 @@ class GroupModel(nn.Module):
         return weighted_predictions, updated_group_probs
 
 
-
-
-    def predict(self, group_probs, gold_target, *original_inputs):
-        # group_probs: numpy array [K]
-        # original_inputs: with bs=1
-
-        # compute output probs based on given group probs
-        predictions = [m(*original_inputs) for m in self.models]  # K x [bs, |Y|]     ## this line is the performance bottleneck
-        prediction_matrix = torch.stack(predictions)  # [K, bs, |Y|]
-        prediction_matrix = torch.transpose(prediction_matrix, 0, 1)  # [bs, K, |Y|]
-        prediction_matrix = torch.transpose(prediction_matrix, 1, 2)  # [bs, |Y|, K]
-
-        v_group_probs = Variable(torch.from_numpy(group_probs.reshape(1,-1,1)))           # [1, K, 1]
-
-        weighted_predictions = torch.bmm(prediction_matrix, v_group_probs) # [bs, |Y|, 1]
-        weighted_predictions = weighted_predictions.view(-1)             # [|Y|]
-
-        # Bayesian update of group probs
-        updated_group_probs = prediction_matrix.data[0, gold_target, :].numpy() * group_probs
-        updated_group_probs /= sum(updated_group_probs)
-
-        return weighted_predictions, updated_group_probs
+    #
+    #
+    # def predict(self, group_probs, gold_target, *original_inputs):
+    #     # group_probs: numpy array [K]
+    #     # original_inputs: with bs=1
+    #
+    #     # compute output probs based on given group probs
+    #     predictions = [m(*original_inputs) for m in self.models]  # K x [bs, |Y|]     ## this line is the performance bottleneck
+    #     prediction_matrix = torch.stack(predictions)  # [K, bs, |Y|]
+    #     prediction_matrix = torch.transpose(prediction_matrix, 0, 1)  # [bs, K, |Y|]
+    #     prediction_matrix = torch.transpose(prediction_matrix, 1, 2)  # [bs, |Y|, K]
+    #
+    #     v_group_probs = Variable(torch.from_numpy(group_probs.reshape(1,-1,1)))           # [1, K, 1]
+    #
+    #     weighted_predictions = torch.bmm(prediction_matrix, v_group_probs) # [bs, |Y|, 1]
+    #     weighted_predictions = weighted_predictions.view(-1)             # [|Y|]
+    #
+    #     # Bayesian update of group probs
+    #     updated_group_probs = prediction_matrix.data[0, gold_target, :].numpy() * group_probs
+    #     updated_group_probs /= sum(updated_group_probs)
+    #
+    #     return weighted_predictions, updated_group_probs
 
 
 
