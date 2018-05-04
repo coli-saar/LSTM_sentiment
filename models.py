@@ -70,7 +70,7 @@ class PureGRU(nn.Module):
 
 
 # AK
-# = PureGRU + softmax layer
+# = PureGRU + log-softmax layer
 class PureGRUClassifier(nn.Module):
 
     def __init__(self, **kwargs):

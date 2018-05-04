@@ -15,7 +15,9 @@ import utils
 from groupmodel import GroupModel
 
 print("Use CUDA: {}".format(settings.GPU))
-
+print("Profiler: {}".format(settings.WITH_PROFILER))
+print("Validate: {}".format(settings.VALIDATION_DATA_PATH))
+print("")
 
 # Instantiate dataset for training ...
 dataset = settings.DATASET(settings.data_path, **settings.DATA_KWARGS)
@@ -23,14 +25,16 @@ data_loader = DataLoader(dataset, batch_size=settings.BATCH_SIZE,
                          shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
 
 # ... and dev set
-if settings.args.load_path:
-    dev_dataset = settings.DATASET(settings.args.load_path, **settings.DATA_KWARGS)
+if settings.VALIDATION_DATA_PATH:
+    dev_dataset = settings.DATASET(settings.VALIDATION_DATA_PATH, **settings.DATA_KWARGS)
     dev_data_loader = DataLoader(dev_dataset, batch_size=1,
                          shuffle=True, num_workers=4, collate_fn=utils.collate_to_packed_for_classification)
 
 
 
-def eval_accuracy(model, data_loader):
+def eval_accuracy(group_model, data_loader):
+    models = group_model.models
+
     num_correct = 0
     num_total = 0
     sum_lik = 0
@@ -47,10 +51,10 @@ def eval_accuracy(model, data_loader):
 
         userid = userids[0]     # int
         gold_target = target[0] # int
-        group_probs = dict_group_probs.get(userid, model.np_g_prior)
+        group_probs = dict_group_probs.get(userid, group_model.np_g_prior)
 
-        t_prediction_matrix, updated_group_probs = model.predict(group_probs, gold_target, feature, lengths)
-        prediction_matrix = t_prediction_matrix.data.numpy()
+        predictions = [model(feature, lengths) for model in models]
+        prediction_matrix, updated_group_probs = group_model.predict_categorical(group_probs, gold_target, predictions)
 
         # t_pred: tensor, [|Y|]
         # ugp: ndarray, [K]
@@ -62,7 +66,7 @@ def eval_accuracy(model, data_loader):
         if predicted == gold_target:
             num_correct += 1
 
-        sum_lik += math.exp(prediction_matrix[gold_target])
+        sum_lik += prediction_matrix[gold_target]
 
         # update group probs for user
         dict_group_probs[userid] = updated_group_probs
@@ -116,14 +120,6 @@ optimizer = torch.optim.Adam(parameters, lr=settings.LEARNING_RATE)
 # Log file is namespaced with the current model
 log_file = "logs/{}_{}.csv".format(group_model.get_name(), settings.data_path.split("/")[-1].split(".json")[0])
 
-if settings.VISUALIZE:
-    # Visualization thorugh visdom
-    viz = Visdom()
-    loss_plot = viz.line(X=np.array([0]), Y=np.array([0]), opts=dict(showlegend=True, title="Loss"))
-    hist_opts = settings.HIST_OPTS
-    hist_opts["title"] = "Predicted star distribution"
-    dist_hist = viz.bar(X=np.array([0, 0, 0]), opts=dict(title="Predicted stars"))
-    real_dist_hist = viz.bar(X=np.array([0, 0, 0]))
 
 # Move stuff to GPU
 if settings.GPU:
@@ -132,13 +128,7 @@ if settings.GPU:
         model.cuda()
     group_model.cuda()
 
-# if settings.VISUALIZE:
-#     smooth_loss = 7 #approx 2.5^2
-#     decay_rate = 0.99
-#     smooth_real_dist = np.array([0, 0, 0, 0, 0], dtype=float)
-#     smooth_pred_dist = np.array([0, 0, 0, 0, 0], dtype=float)
-#
-#     counter = 0
+
 
 lossfn = torch.nn.NLLLoss(reduce=False)
 
@@ -163,113 +153,65 @@ def tnp(tensor):
 
 
 for epoch in range(settings.EPOCHS):
-    group_model.start_epoch()
+    with torch.autograd.profiler.profile(enabled=settings.WITH_PROFILER) as prof:
+        group_model.start_epoch()
 
-    # Main train loop
-    length = len(dataset)/settings.BATCH_SIZE
-    kl_diff = 0
-    seen_instances_in_epoch = 0
+        # Main train loop
+        length = len(dataset)/settings.BATCH_SIZE
+        kl_diff = 0
+        seen_instances_in_epoch = 0
 
-    print("Starting epoch {} with length {}".format(epoch, length))
-    for i, (feature, lengths, target, userids) in enumerate(data_loader):
-        seen_instances_in_epoch += len(userids)
+        print("Starting epoch {} with length {}".format(epoch, length))
+        for i, (feature, lengths, target, userids) in enumerate(data_loader):
+            seen_instances_in_epoch += len(userids)
 
-        if settings.GPU:
-            feature = feature.cuda(async=True)
-            target = target.cuda(async=True)
-            userids = userids.cuda(async=True)
+            if settings.GPU:
+                feature = feature.cuda(async=True)
+                target = target.cuda(async=True)
+                userids = userids.cuda(async=True)
 
+            # apply the models for the individual groups forwards
+            predictions = [model(feature, lengths) for model in models]
+            tgt = torch.autograd.Variable(target)
+            losses = [lossfn(out, tgt) for out in predictions]
 
-        predictions = [model(feature, lengths) for model in models]
-        tgt = torch.autograd.Variable(target)
-        losses = [lossfn(out, tgt) for out in predictions]
+            # combine their losses into a loss for the whole group model
+            loss = group_model.group_loss(losses, userids)
 
-        loss = group_model.group_loss(losses, userids)
+            # for evaluation purposes, compute KL divergence between the
+            # predictions of the individual models
+            if num_groups > 1:
+                # predictions[i] are FloatTensors (bs, Y)
+                lik = predictions[0]                             # tensor
+                prev_t_likelihood = predictions[1].detach()
+                kl_diff += float(kl_div(lik, torch.exp(prev_t_likelihood)))
 
-        if num_groups > 1:
-            # predictions[i] are FloatTensors (bs, Y)
-            lik = predictions[0]                             # tensor
-            prev_t_likelihood = predictions[1].detach()
-            kl_diff += float(kl_div(lik, torch.exp(prev_t_likelihood)))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
+            # Log loss
+            with open(log_file, 'a') as logfile:
+                logfile.write("{},".format(float(loss)))
 
+            # Progress update
+            # if i % 10 == 0:
+            #     sys.stdout.write("\rIter {}/{}, loss: {}".format(i, length, float(loss)))
+            #     if COMET_API_KEY:
+            #         step = i + epoch*length
+            #         experiment.log_metric("loss", float(loss)/seen_instances_in_epoch, step=step)
 
-        #
-        # out, t_prediction_matrix = model(userids, feature, lengths)
-        # prediction_matrix = vnp(t_prediction_matrix)
-        #
-        # # if settings.GPU:
-        # #     prediction_matrix = t_prediction_matrix.cpu().data.numpy()
-        # # else:
-        # #     prediction_matrix = t_prediction_matrix.data.numpy()
-        #
-        # # out: [bs, Y]
-        # # (t_) prediction_matrix: [bs, Y, K]
-        # # target: [bs]
-        #
-        # # collect likelihoods [bs, K] for reestimation of group assignments
-        # bs, Y = out.size()
-        # log_likelihoods = np.zeros([bs, num_groups])
-        # kl_loss = None
-        # prev_t_likelihood = None
-        # for i in range(bs):
-        #     tg = target[i]
-        #     log_likelihoods[i] = prediction_matrix[i, tg, :]
-        #
-        #     lik = t_prediction_matrix[i, tg, :]
-        #     if prev_t_likelihood is not None:
-        #         kld = kl_div(lik, torch.exp(prev_t_likelihood))
-        #         if kl_loss is not None:
-        #             kl_loss += kld
-        #         else:
-        #             kl_loss = kld
-        #     prev_t_likelihood = lik.detach()
-        #
-        #
-        # model.collect_log_likelihoods(log_likelihoods, userids)
-        #
-        # train_loss = lossfn(out, torch.autograd.Variable(target))
+        group_model.end_epoch()
+
+    if settings.WITH_PROFILER:
+        with open("profiler_%d.txt" % epoch, "w") as pf:
+            print(prof, file=pf)
 
 
-        # loss = train_loss - decay(kl_loss, epoch)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # Log loss
-        with open(log_file, 'a') as logfile:
-            logfile.write("{},".format(float(loss)))
-
-        # # Visualization update
-        # if settings.VISUALIZE:
-        #     smooth_loss = smooth_loss * decay_rate + (1-decay_rate) * loss.data.cpu().numpy()
-        #     viz.updateTrace(win=loss_plot, X=np.array([counter]), Y=loss.data.cpu().numpy(), name='loss')
-        #     viz.updateTrace(win=loss_plot, X=np.array([counter]), Y=smooth_loss, name='smooth loss')
-        #     real_star = target[:, 0].data.cpu().numpy().astype(int)
-        #     pred_star = out[0, :, 0].data.cpu().numpy().round().clip(1,5).astype(int)
-        #     for idx in range(len(real_star)):
-        #         smooth_pred_dist[pred_star[idx]-1] += 1
-        #         smooth_real_dist[real_star[idx]-1] += 1
-        #     smooth_real_dist *= decay_rate
-        #     smooth_pred_dist *= decay_rate
-        #
-        #     viz.bar(win=dist_hist, X=smooth_pred_dist)
-        #     viz.bar(win=real_dist_hist, X=smooth_real_dist)
-        #
-        #     counter += 1
-
-        # Progress update
-        # if i % 10 == 0:
-        #     sys.stdout.write("\rIter {}/{}, loss: {}".format(i, length, float(loss)))
-        #     if COMET_API_KEY:
-        #         step = i + epoch*length
-        #         experiment.log_metric("loss", float(loss)/seen_instances_in_epoch, step=step)
-
-    group_model.end_epoch()
-
-    if settings.args.load_path:
-        eval_acc, mean_eval_likelihood = eval_accuracy(model, dev_data_loader)
+    if settings.VALIDATION_DATA_PATH:
+        print("validate...")
+        eval_acc, mean_eval_likelihood = eval_accuracy(group_model, dev_data_loader)
         print("val acc: %f" % eval_acc)
         print("val lik: %f" % mean_eval_likelihood)
 
@@ -286,16 +228,9 @@ for epoch in range(settings.EPOCHS):
         experiment.log_metric("kl_diff", mean_kl_diff, step=step)
         experiment.log_metric("prior_entropy", pri_ent, step=step-length)
 
-        # cos = model.cosine_distance()
-        # experiment.log_metric("training_loss", float(loss), step=step)
-        # experiment.log_metric("kl_loss/100", float(kl_loss/100), step=step)
-        # experiment.log_metric("diff_predictions", model.mean_sumcos(), step=step) # mean absolute diff in log-likelihoods
-
-        if settings.args.load_path:
-            experiment.log_metric("dev accuracy", eval_acc)
-            experiment.log_metric("mean dev likelihood", mean_eval_likelihood)
-
-    # print("mean sc %f" % model.mean_sumcos())
+        if settings.VALIDATION_DATA_PATH:
+            experiment.log_metric("dev accuracy", eval_acc, step=step)
+            experiment.log_metric("mean dev likelihood", mean_eval_likelihood, step=step)
 
     print("Epoch finished with last loss: {}".format(float(loss)))
 

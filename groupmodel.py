@@ -17,11 +17,12 @@ def describe(label, x):
     print("%s: type=%s, size=%s" % (label, type(x), x.size()))
 
 class GroupModel(nn.Module):
-    def __init__(self, num_users, num_groups, models): # , modelclass
+    def __init__(self, num_users, num_groups, models):
         super().__init__()
 
         self.num_groups = num_groups
         self.num_users = num_users
+        self.models = models
 
         # make parameters of the individual models parameters of the group model
         # self.models = [modelclass(**kwargs) for i in range(num_groups)]
@@ -38,17 +39,8 @@ class GroupModel(nn.Module):
         for i in range(num_users):
             self.np_gu_posterior[i] = np.random.dirichlet(np.ones(num_groups))
 
-
         # set up data structure for priors P(g)
         self.np_g_prior = np.zeros(num_groups, dtype=np.float32)
-
-        # set model name
-        # underlying_model_name = self.models[0].get_name()
-
-        # self.rnnweights = [m.state_dict()["gru.weight_hh_l0"] for m in self.models]
-
-        # self.weights0 = self.models[0].state_dict()["gru.weight_hh_l0"]
-        # self.weights1 = self.models[1].state_dict()["gru.weight_hh_l0"]
 
         self.name = "GroupModel(%d)" % (num_groups) # , underlying_model_name)
 
@@ -73,37 +65,6 @@ class GroupModel(nn.Module):
         Z = joint.sum(axis=1) # (num_users)
         self.np_gu_posterior = (joint.transpose() / Z).transpose() # (num_users, num_groups)
 
-    def prior_entropy(self):
-        ent = - np.sum(self.np_g_prior * np.log2(self.np_g_prior))
-        print("prior ent %f" % ent)
-        return ent
-
-    def mean_posterior_entropy(self):
-        s = 0
-        for i in range(self.num_users):
-            pk = self.np_gu_posterior[i]
-            s += -np.sum(pk * np.log2(pk), axis=0)
-        return (s/self.num_users)
-
-    # def cosine_distance(self):
-    #     if self.num_groups > 1:
-    #         return self.cos(self.rnnweights[0].numpy(), self.rnnweights[1].numpy())
-    #     else:
-    #         return 0
-
-    def cos(self, v1, v2):
-        v1 = v1.ravel()
-        v2 = v2.ravel()
-        ret = (v1.dot(v2)) / np.sqrt(v1.dot(v1)) / np.sqrt(v2.dot(v2))
-        print("cos: %f" % ret)
-        return ret
-
-    def vecdiff(self, v1, v2):
-        v1, v2 = v1.ravel(), v2.ravel()
-        ret = np.sum(np.abs(v1-v2))/len(v1)
-        # print("diff %f" % ret)
-        return ret
-
     def reset_likelihoods(self):
         self.nll = settings.cd(torch.zeros((self.num_users, self.num_groups))) # (U,K)
 
@@ -111,33 +72,6 @@ class GroupModel(nn.Module):
         # self.sumcos = 0
         # self.Z_sumcos = 0
 
-    # call after each call to forward during training
-    # DEPRECATED
-    def collect_log_likelihoods(self, log_likelihoods, userids):
-        # likelihoods: np.array of shape [bs, K], where likelihoods[i,g] = log P_g(yi|xi)
-        # userids: [uid_1, ..., uid_bs]
-        for i in range(len(userids)):
-            u = userids[i]
-            self.log_likelihoods[u] += log_likelihoods[i]
-
-        if self.num_groups > 1:
-            # print("\n")
-            # print(likelihoods[:,0])
-            # print(likelihoods[:,1])
-            self.sumcos += self.vecdiff(log_likelihoods[:,0], log_likelihoods[:,1])
-            self.Z_sumcos += 1
-
-    def mean_sumcos(self):
-        if self.num_groups == 1:
-            return 0
-        else:
-            return self.sumcos/self.Z_sumcos
-
-    def generate_umask(self, userids):
-        umask = torch.sparse.LongTensor([len(userids), self.num_users])  # (bs, U)
-        for i in range(len(userids)):
-            umask[i, userids[i]] = 1
-        return umask
 
     # generate dictionary of userid -> [positions in "userids" list that have userid]
     def generate_uix(self, userids):
@@ -146,6 +80,14 @@ class GroupModel(nn.Module):
             uix[val].append(ix)
         return uix
 
+    # Combines the losses of the models for the individual groups on a minibatch
+    # into a loss for the group model as a whole. This is the expected value of the
+    # individual losses under the group posteriors for the respective users.
+    #
+    # At the same time, collects the losses as log-likelihoods into self.nll,
+    # a matrix of shape (#users, #groups) that sums up the likelihoods of the
+    # data for each user under each individual group model. This will be used
+    # later to recalculate the posteriors.
     def group_loss(self, losses, userids):
         # losses = [ (bs), ..., (bs) ]   -> produce e.g. with NLLLoss(reduce=False)
         # losses[g][i] = - log P(y_i | x_i, g)
@@ -160,7 +102,7 @@ class GroupModel(nn.Module):
         total_loss = weighted_losses.sum()                 # sum over groups and instances; result is shape ()
 
         # accumulate negative log-likelihoods per user
-        # self.nll = torch.FloatTensor([self.num_groups, self.num_users]) # (K, U)
+        # self.nll is of shape (U, K)
         uix = self.generate_uix(userids)
         d_stacked_losses = stacked_losses.detach()
         for userid, ix in uix.items():
@@ -172,19 +114,26 @@ class GroupModel(nn.Module):
         return total_loss
 
 
-    def forward(self, userids, *original_inputs):
-        predictions = [m(*original_inputs) for m in self.models]         # K x [bs, |Y|]
-        prediction_matrix = torch.stack(predictions)                     # [K, bs, |Y|]
-        prediction_matrix = torch.transpose(prediction_matrix, 0, 1)     # [bs, K, |Y|]
-        prediction_matrix = torch.transpose(prediction_matrix, 1, 2)     # [bs, |Y|, K]
+    def predict_categorical(self, group_probs, gold_target, individual_predictions):
+        # group_probs: numpy array [K]
+        # individual_predictions: K x (1, |Y|); assume that these were produced by a log-softmax, i.e. they are log-probabilities
 
-        group_probs = self.gu_posterior(userids)                         # [bs, K]
-        group_probs = torch.unsqueeze(group_probs, 2)                    # [bs, K, 1]
+        stacked_predictions = torch.stack(individual_predictions)               # [K, 1, |Y|]  (because bs=1)
+        np_predictions = settings.dc(stacked_predictions.data).numpy()
+        np_predictions = np.exp(np_predictions)
+        np_predictions = np.squeeze(np_predictions, axis=1)                     # [K, |Y|]
+        np_predictions = np.transpose(np_predictions).transpose()               # [|Y|, K]
 
-        weighted_predictions = torch.bmm(prediction_matrix, group_probs) # [bs, |Y|, 1]
-        weighted_predictions = torch.squeeze(weighted_predictions, 2)    # [bs, |Y|]
+        weighted_predictions = np_predictions.dot(group_probs)                  # [|Y|]
 
-        return weighted_predictions, prediction_matrix
+        # Bayesian update of group probs
+        updated_group_probs = np_predictions[gold_target, :] * group_probs      # [K]
+        updated_group_probs /= np.sum(updated_group_probs)
+
+        return weighted_predictions, updated_group_probs
+
+
+
 
     def predict(self, group_probs, gold_target, *original_inputs):
         # group_probs: numpy array [K]
@@ -213,3 +162,82 @@ class GroupModel(nn.Module):
         return self.name
 
 
+
+
+    # reporting statistics about the things the model has learned
+
+    def prior_entropy(self):
+        ent = - np.sum(self.np_g_prior * np.log2(self.np_g_prior))
+        print("prior ent %f" % ent)
+        return ent
+
+    def mean_posterior_entropy(self):
+        s = 0
+        for i in range(self.num_users):
+            pk = self.np_gu_posterior[i]
+            s += -np.sum(pk * np.log2(pk), axis=0)
+        return (s/self.num_users)
+
+
+
+
+
+
+    #
+    # def forward(self, userids, *original_inputs):
+    #     predictions = [m(*original_inputs) for m in self.models]         # K x [bs, |Y|]
+    #     prediction_matrix = torch.stack(predictions)                     # [K, bs, |Y|]
+    #     prediction_matrix = torch.transpose(prediction_matrix, 0, 1)     # [bs, K, |Y|]
+    #     prediction_matrix = torch.transpose(prediction_matrix, 1, 2)     # [bs, |Y|, K]
+    #
+    #     group_probs = self.gu_posterior(userids)                         # [bs, K]
+    #     group_probs = torch.unsqueeze(group_probs, 2)                    # [bs, K, 1]
+    #
+    #     weighted_predictions = torch.bmm(prediction_matrix, group_probs) # [bs, |Y|, 1]
+    #     weighted_predictions = torch.squeeze(weighted_predictions, 2)    # [bs, |Y|]
+    #
+    #     return weighted_predictions, prediction_matrix
+    #
+    #
+    # # def cosine_distance(self):
+    # #     if self.num_groups > 1:
+    # #         return self.cos(self.rnnweights[0].numpy(), self.rnnweights[1].numpy())
+    # #     else:
+    # #         return 0
+    #
+    # def cos(self, v1, v2):
+    #     v1 = v1.ravel()
+    #     v2 = v2.ravel()
+    #     ret = (v1.dot(v2)) / np.sqrt(v1.dot(v1)) / np.sqrt(v2.dot(v2))
+    #     print("cos: %f" % ret)
+    #     return ret
+    #
+    #     # call after each call to forward during training
+    #     # DEPRECATED
+    #
+    # def collect_log_likelihoods(self, log_likelihoods, userids):
+    #     # likelihoods: np.array of shape [bs, K], where likelihoods[i,g] = log P_g(yi|xi)
+    #     # userids: [uid_1, ..., uid_bs]
+    #     for i in range(len(userids)):
+    #         u = userids[i]
+    #         self.log_likelihoods[u] += log_likelihoods[i]
+    #
+    #     if self.num_groups > 1:
+    #         # print("\n")
+    #         # print(likelihoods[:,0])
+    #         # print(likelihoods[:,1])
+    #         self.sumcos += self.vecdiff(log_likelihoods[:, 0], log_likelihoods[:, 1])
+    #         self.Z_sumcos += 1
+    #
+    # def mean_sumcos(self):
+    #     if self.num_groups == 1:
+    #         return 0
+    #     else:
+    #         return self.sumcos / self.Z_sumcos
+    #
+    #
+    # def vecdiff(self, v1, v2):
+    #     v1, v2 = v1.ravel(), v2.ravel()
+    #     ret = np.sum(np.abs(v1-v2))/len(v1)
+    #     # print("diff %f" % ret)
+    #     return ret

@@ -8,7 +8,7 @@ import os
 parser = argparse.ArgumentParser(description="Sentiment analysis through Yelp reviews.")
 #parser.add_argument('--enable-cuda', action='store_true', help='Enable CUDA')
 parser.add_argument('--visualize', action='store_true', help='Enable visdom visualization')
-parser.add_argument('--load-path', action='store', help='Path to checkpoint file for evaluation.')
+# parser.add_argument('--load-path', action='store', help='Path to checkpoint file for evaluation.')
 #parser.add_argument('--data-path', action='store', help='Path to dataset.')
 parser.add_argument('--text', action='store', help='Text for live evaluation.')
 parser.add_argument('--port', action='store', help='Port when using live evaluation server')
@@ -19,6 +19,8 @@ EPOCHS = 500
 LEARNING_RATE = 0.001
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE") or "100")
 GPU = torch.cuda.is_available()
+WITH_PROFILER = bool(os.environ.get("PROFILER") or "")
+VALIDATION_DATA_PATH = os.environ.get("VALIDATION_DATA_PATH") or None
 
 MODEL = {
     "model": models.PureGRUClassifier,
@@ -54,5 +56,12 @@ data_path = os.environ.get("DATA_PATH")
 def cd(tensor):
     if GPU:
         return tensor.cuda()
+    else:
+        return tensor
+
+
+def dc(tensor):
+    if GPU:
+        return tensor.cpu()
     else:
         return tensor
