@@ -284,7 +284,7 @@ for epoch in range(settings.EPOCHS):
         experiment.log_metric("mean_entropy", ent, step=step)
         experiment.log_metric("loss", mean_loss, step=step)
         experiment.log_metric("kl_diff", mean_kl_diff, step=step)
-        experiment.log_metric("prior_entropy", pri_ent, step=step-1)
+        experiment.log_metric("prior_entropy", pri_ent, step=step-length)
 
         # cos = model.cosine_distance()
         # experiment.log_metric("training_loss", float(loss), step=step)
