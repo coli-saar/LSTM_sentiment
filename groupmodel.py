@@ -66,12 +66,17 @@ class GroupModel(nn.Module):
 
     def recalculate_posteriors(self):
         # calculate P(g, D_u)
-        nll = self.nll.cpu().numpy()
+        nll = self.nll.cpu().numpy() # (U,K)
         likelihoods = np.exp(-nll)  # (U,K)
 
         joint = self.np_g_prior * likelihoods # np.exp(self.log_likelihoods) # (num_users, num_groups)
         Z = joint.sum(axis=1) # (num_users)
         self.np_gu_posterior = (joint.transpose() / Z).transpose() # (num_users, num_groups)
+
+    def prior_entropy(self):
+        ent = - np.sum(self.np_g_prior * np.log2(self.np_g_prior))
+        print("prior ent %f" % ent)
+        return ent
 
     def mean_posterior_entropy(self):
         s = 0

@@ -279,10 +279,12 @@ for epoch in range(settings.EPOCHS):
         mean_loss = float(loss) / seen_instances_in_epoch
         mean_kl_diff = kl_diff
         ent = group_model.mean_posterior_entropy()
+        pri_ent = group_model.prior_entropy() # actually of one episode before
 
         experiment.log_metric("mean_entropy", ent, step=step)
         experiment.log_metric("loss", mean_loss, step=step)
         experiment.log_metric("kl_diff", mean_kl_diff, step=step)
+        experiment.log_metric("prior_entropy", pri_ent, step=step-1)
 
         # cos = model.cosine_distance()
         # experiment.log_metric("training_loss", float(loss), step=step)
